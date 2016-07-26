@@ -292,6 +292,8 @@
 			#size-cells = <0>;
 			clocks = <&clk_usb>;
 			clock-names = "otg";
+			phys = <&usbphy>;
+			phy-names = "usb2-phy";
 		};
 
 		v3d: v3d@7ec00000 {
@@ -302,6 +304,10 @@
 
 		vc4: gpu {
 			compatible = "brcm,bcm2835-vc4";
+		};
+
+		usbphy: phy {
+			compatible = "usb-nop-xceiv";
 		};
 	};
 
