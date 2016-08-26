@@ -12,6 +12,12 @@
 /dts-v1/;
 #include "bcm2835.dtsi"
 #include "bcm2835-rpi.dtsi"
+
+/*
+ * Include bcm283x-rpi-usb-host.dtsi for host mode
+ * or include bcm283x-rpi-usb-otg.dtsi for OTG mode
+ * or include bcm283x-rpi-usb-peripheral.dtsi for gadget mode
+ */
 #include "bcm283x-rpi-usb-host.dtsi"
 
 / {
