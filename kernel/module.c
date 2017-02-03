@@ -46,7 +46,7 @@
 #include <linux/string.h>
 #include <linux/mutex.h>
 #include <linux/rculist.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
 #include <linux/license.h>
@@ -313,8 +313,11 @@ struct load_info {
 	} index;
 };
 
-/* We require a truly strong try_module_get(): 0 means failure due to
-   ongoing or failed initialization etc. */
+/*
+ * We require a truly strong try_module_get(): 0 means success.
+ * Otherwise an error is returned due to ongoing or failed
+ * initialization etc.
+ */
 static inline int strong_try_module_get(struct module *mod)
 {
 	BUG_ON(mod && mod->state == MODULE_STATE_UNFORMED);
@@ -330,7 +333,7 @@ static inline void add_taint_module(struct module *mod, unsigned flag,
 				    enum lockdep_ok lockdep_ok)
 {
 	add_taint(flag, lockdep_ok);
-	mod->taints |= (1U << flag);
+	set_bit(flag, &mod->taints);
 }
 
 /*
@@ -1138,22 +1141,13 @@ static inline int module_unload_init(struct module *mod)
 static size_t module_flags_taint(struct module *mod, char *buf)
 {
 	size_t l = 0;
+	int i;
 
-	if (mod->taints & (1 << TAINT_PROPRIETARY_MODULE))
-		buf[l++] = 'P';
-	if (mod->taints & (1 << TAINT_OOT_MODULE))
-		buf[l++] = 'O';
-	if (mod->taints & (1 << TAINT_FORCED_MODULE))
-		buf[l++] = 'F';
-	if (mod->taints & (1 << TAINT_CRAP))
-		buf[l++] = 'C';
-	if (mod->taints & (1 << TAINT_UNSIGNED_MODULE))
-		buf[l++] = 'E';
-	/*
-	 * TAINT_FORCED_RMMOD: could be added.
-	 * TAINT_CPU_OUT_OF_SPEC, TAINT_MACHINE_CHECK, TAINT_BAD_PAGE don't
-	 * apply to modules.
-	 */
+	for (i = 0; i < TAINT_FLAGS_COUNT; i++) {
+		if (taint_flags[i].module && test_bit(i, &mod->taints))
+			buf[l++] = taint_flags[i].c_true;
+	}
+
 	return l;
 }
 
@@ -1299,8 +1293,9 @@ static int check_version(Elf_Shdr *sechdrs,
 		goto bad_version;
 	}
 
-	pr_warn("%s: no symbol version for %s\n", mod->name, symname);
-	return 0;
+	/* Broken toolchain. Warn once, then let it go.. */
+	pr_warn_once("%s: no symbol version for %s\n", mod->name, symname);
+	return 1;
 
 bad_version:
 	pr_warn("%s: disagrees about version of symbol %s\n",
@@ -1858,10 +1853,11 @@ static void mod_sysfs_teardown(struct module *mod)
  * from modification and any data from execution.
  *
  * General layout of module is:
- *          [text] [read-only-data] [writable data]
- * text_size -----^                ^               ^
- * ro_size ------------------------|               |
- * size -------------------------------------------|
+ *          [text] [read-only-data] [ro-after-init] [writable data]
+ * text_size -----^                ^               ^               ^
+ * ro_size ------------------------|               |               |
+ * ro_after_init_size -----------------------------|               |
+ * size -----------------------------------------------------------|
  *
  * These values are always page-aligned (as is base)
  */
@@ -1884,36 +1880,57 @@ static void frob_rodata(const struct module_layout *layout,
 		   (layout->ro_size - layout->text_size) >> PAGE_SHIFT);
 }
 
+static void frob_ro_after_init(const struct module_layout *layout,
+				int (*set_memory)(unsigned long start, int num_pages))
+{
+	BUG_ON((unsigned long)layout->base & (PAGE_SIZE-1));
+	BUG_ON((unsigned long)layout->ro_size & (PAGE_SIZE-1));
+	BUG_ON((unsigned long)layout->ro_after_init_size & (PAGE_SIZE-1));
+	set_memory((unsigned long)layout->base + layout->ro_size,
+		   (layout->ro_after_init_size - layout->ro_size) >> PAGE_SHIFT);
+}
+
 static void frob_writable_data(const struct module_layout *layout,
 			       int (*set_memory)(unsigned long start, int num_pages))
 {
 	BUG_ON((unsigned long)layout->base & (PAGE_SIZE-1));
-	BUG_ON((unsigned long)layout->ro_size & (PAGE_SIZE-1));
+	BUG_ON((unsigned long)layout->ro_after_init_size & (PAGE_SIZE-1));
 	BUG_ON((unsigned long)layout->size & (PAGE_SIZE-1));
-	set_memory((unsigned long)layout->base + layout->ro_size,
-		   (layout->size - layout->ro_size) >> PAGE_SHIFT);
+	set_memory((unsigned long)layout->base + layout->ro_after_init_size,
+		   (layout->size - layout->ro_after_init_size) >> PAGE_SHIFT);
 }
 
 /* livepatching wants to disable read-only so it can frob module. */
 void module_disable_ro(const struct module *mod)
 {
+	if (!rodata_enabled)
+		return;
+
 	frob_text(&mod->core_layout, set_memory_rw);
 	frob_rodata(&mod->core_layout, set_memory_rw);
+	frob_ro_after_init(&mod->core_layout, set_memory_rw);
 	frob_text(&mod->init_layout, set_memory_rw);
 	frob_rodata(&mod->init_layout, set_memory_rw);
 }
 
-void module_enable_ro(const struct module *mod)
+void module_enable_ro(const struct module *mod, bool after_init)
 {
+	if (!rodata_enabled)
+		return;
+
 	frob_text(&mod->core_layout, set_memory_ro);
 	frob_rodata(&mod->core_layout, set_memory_ro);
 	frob_text(&mod->init_layout, set_memory_ro);
 	frob_rodata(&mod->init_layout, set_memory_ro);
+
+	if (after_init)
+		frob_ro_after_init(&mod->core_layout, set_memory_ro);
 }
 
 static void module_enable_nx(const struct module *mod)
 {
 	frob_rodata(&mod->core_layout, set_memory_nx);
+	frob_ro_after_init(&mod->core_layout, set_memory_nx);
 	frob_writable_data(&mod->core_layout, set_memory_nx);
 	frob_rodata(&mod->init_layout, set_memory_nx);
 	frob_writable_data(&mod->init_layout, set_memory_nx);
@@ -1922,6 +1939,7 @@ static void module_enable_nx(const struct module *mod)
 static void module_disable_nx(const struct module *mod)
 {
 	frob_rodata(&mod->core_layout, set_memory_x);
+	frob_ro_after_init(&mod->core_layout, set_memory_x);
 	frob_writable_data(&mod->core_layout, set_memory_x);
 	frob_rodata(&mod->init_layout, set_memory_x);
 	frob_writable_data(&mod->init_layout, set_memory_x);
@@ -1931,6 +1949,9 @@ static void module_disable_nx(const struct module *mod)
 void set_all_modules_text_rw(void)
 {
 	struct module *mod;
+
+	if (!rodata_enabled)
+		return;
 
 	mutex_lock(&module_mutex);
 	list_for_each_entry_rcu(mod, &modules, list) {
@@ -1948,9 +1969,18 @@ void set_all_modules_text_ro(void)
 {
 	struct module *mod;
 
+	if (!rodata_enabled)
+		return;
+
 	mutex_lock(&module_mutex);
 	list_for_each_entry_rcu(mod, &modules, list) {
-		if (mod->state == MODULE_STATE_UNFORMED)
+		/*
+		 * Ignore going modules since it's possible that ro
+		 * protection has already been disabled, otherwise we'll
+		 * run into protection faults at module deallocation.
+		 */
+		if (mod->state == MODULE_STATE_UNFORMED ||
+			mod->state == MODULE_STATE_GOING)
 			continue;
 
 		frob_text(&mod->core_layout, set_memory_ro);
@@ -1961,9 +1991,13 @@ void set_all_modules_text_ro(void)
 
 static void disable_ro_nx(const struct module_layout *layout)
 {
-	frob_text(layout, set_memory_rw);
-	frob_rodata(layout, set_memory_rw);
+	if (rodata_enabled) {
+		frob_text(layout, set_memory_rw);
+		frob_rodata(layout, set_memory_rw);
+		frob_ro_after_init(layout, set_memory_rw);
+	}
 	frob_rodata(layout, set_memory_x);
+	frob_ro_after_init(layout, set_memory_x);
 	frob_writable_data(layout, set_memory_x);
 }
 
@@ -2306,6 +2340,7 @@ static void layout_sections(struct module *mod, struct load_info *info)
 		 * finder in the two loops below */
 		{ SHF_EXECINSTR | SHF_ALLOC, ARCH_SHF_SMALL },
 		{ SHF_ALLOC, SHF_WRITE | ARCH_SHF_SMALL },
+		{ SHF_RO_AFTER_INIT | SHF_ALLOC, ARCH_SHF_SMALL },
 		{ SHF_WRITE | SHF_ALLOC, ARCH_SHF_SMALL },
 		{ ARCH_SHF_SMALL | SHF_ALLOC, 0 }
 	};
@@ -2337,7 +2372,11 @@ static void layout_sections(struct module *mod, struct load_info *info)
 			mod->core_layout.size = debug_align(mod->core_layout.size);
 			mod->core_layout.ro_size = mod->core_layout.size;
 			break;
-		case 3: /* whole core */
+		case 2: /* RO after init */
+			mod->core_layout.size = debug_align(mod->core_layout.size);
+			mod->core_layout.ro_after_init_size = mod->core_layout.size;
+			break;
+		case 4: /* whole core */
 			mod->core_layout.size = debug_align(mod->core_layout.size);
 			break;
 		}
@@ -2367,7 +2406,14 @@ static void layout_sections(struct module *mod, struct load_info *info)
 			mod->init_layout.size = debug_align(mod->init_layout.size);
 			mod->init_layout.ro_size = mod->init_layout.size;
 			break;
-		case 3: /* whole init */
+		case 2:
+			/*
+			 * RO after init doesn't apply to init_layout (only
+			 * core_layout), so it just takes the value of ro_size.
+			 */
+			mod->init_layout.ro_after_init_size = mod->init_layout.ro_size;
+			break;
+		case 4: /* whole init */
 			mod->init_layout.size = debug_align(mod->init_layout.size);
 			break;
 		}
@@ -2761,14 +2807,17 @@ static int copy_chunked_from_user(void *dst, const void __user *usrc, unsigned l
 }
 
 #ifdef CONFIG_LIVEPATCH
-static int find_livepatch_modinfo(struct module *mod, struct load_info *info)
+static int check_modinfo_livepatch(struct module *mod, struct load_info *info)
 {
-	mod->klp = get_modinfo(info, "livepatch") ? true : false;
+	if (get_modinfo(info, "livepatch")) {
+		mod->klp = true;
+		add_taint_module(mod, TAINT_LIVEPATCH, LOCKDEP_STILL_OK);
+	}
 
 	return 0;
 }
 #else /* !CONFIG_LIVEPATCH */
-static int find_livepatch_modinfo(struct module *mod, struct load_info *info)
+static int check_modinfo_livepatch(struct module *mod, struct load_info *info)
 {
 	if (get_modinfo(info, "livepatch")) {
 		pr_err("%s: module is marked as livepatch module, but livepatch support is disabled",
@@ -2938,7 +2987,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 			"is unknown, you have been warned.\n", mod->name);
 	}
 
-	err = find_livepatch_modinfo(mod, info);
+	err = check_modinfo_livepatch(mod, info);
 	if (err)
 		return err;
 
@@ -3169,15 +3218,40 @@ int __weak module_frob_arch_sections(Elf_Ehdr *hdr,
 	return 0;
 }
 
+/* module_blacklist is a comma-separated list of module names */
+static char *module_blacklist;
+static bool blacklisted(char *module_name)
+{
+	const char *p;
+	size_t len;
+
+	if (!module_blacklist)
+		return false;
+
+	for (p = module_blacklist; *p; p += len) {
+		len = strcspn(p, ",");
+		if (strlen(module_name) == len && !memcmp(module_name, p, len))
+			return true;
+		if (p[len] == ',')
+			len++;
+	}
+	return false;
+}
+core_param(module_blacklist, module_blacklist, charp, 0400);
+
 static struct module *layout_and_allocate(struct load_info *info, int flags)
 {
 	/* Module within temporary copy. */
 	struct module *mod;
+	unsigned int ndx;
 	int err;
 
 	mod = setup_load_info(info, flags);
 	if (IS_ERR(mod))
 		return mod;
+
+	if (blacklisted(mod->name))
+		return ERR_PTR(-EPERM);
 
 	err = check_modinfo(mod, info, flags);
 	if (err)
@@ -3191,6 +3265,15 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 
 	/* We will do a special allocation for per-cpu sections later. */
 	info->sechdrs[info->index.pcpu].sh_flags &= ~(unsigned long)SHF_ALLOC;
+
+	/*
+	 * Mark ro_after_init section with SHF_RO_AFTER_INIT so that
+	 * layout_sections() can put it in the right place.
+	 * Note: ro_after_init sections also have SHF_{WRITE,ALLOC} set.
+	 */
+	ndx = find_sec(info, ".data..ro_after_init");
+	if (ndx)
+		info->sechdrs[ndx].sh_flags |= SHF_RO_AFTER_INIT;
 
 	/* Determine total sizes, and put offsets in sh_entsize.  For now
 	   this is done generically; there doesn't appear to be any
@@ -3358,12 +3441,14 @@ static noinline int do_init_module(struct module *mod)
 	/* Switch to core kallsyms now init is done: kallsyms may be walking! */
 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
 #endif
+	module_enable_ro(mod, true);
 	mod_tree_remove_init(mod);
 	disable_ro_nx(&mod->init_layout);
 	module_arch_freeing_init(mod);
 	mod->init_layout.base = NULL;
 	mod->init_layout.size = 0;
 	mod->init_layout.ro_size = 0;
+	mod->init_layout.ro_after_init_size = 0;
 	mod->init_layout.text_size = 0;
 	/*
 	 * We want to free module_init, but be aware that kallsyms may be
@@ -3455,8 +3540,7 @@ static int complete_formation(struct module *mod, struct load_info *info)
 	/* This relies on module_mutex for list integrity. */
 	module_bug_finalize(info->hdr, info->sechdrs, mod);
 
-	/* Set RO and NX regions */
-	module_enable_ro(mod);
+	module_enable_ro(mod, false);
 	module_enable_nx(mod);
 
 	/* Mark state as coming so strong_try_module_get() ignores us,
@@ -3637,6 +3721,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
  sysfs_cleanup:
 	mod_sysfs_teardown(mod);
  coming_cleanup:
+	mod->state = MODULE_STATE_GOING;
 	blocking_notifier_call_chain(&module_notify_list,
 				     MODULE_STATE_GOING, mod);
 	klp_module_going(mod);
@@ -3970,6 +4055,10 @@ int module_kallsyms_on_each_symbol(int (*fn)(void *, const char *,
 }
 #endif /* CONFIG_KALLSYMS */
 
+/* Maximum number of characters written by module_flags() */
+#define MODULE_FLAGS_BUF_SIZE (TAINT_FLAGS_COUNT + 4)
+
+/* Keep in sync with MODULE_FLAGS_BUF_SIZE !!! */
 static char *module_flags(struct module *mod, char *buf)
 {
 	int bx = 0;
@@ -4014,7 +4103,7 @@ static void m_stop(struct seq_file *m, void *p)
 static int m_show(struct seq_file *m, void *p)
 {
 	struct module *mod = list_entry(p, struct module, list);
-	char buf[8];
+	char buf[MODULE_FLAGS_BUF_SIZE];
 
 	/* We always ignore unformed modules. */
 	if (mod->state == MODULE_STATE_UNFORMED)
@@ -4185,7 +4274,7 @@ EXPORT_SYMBOL_GPL(__module_text_address);
 void print_modules(void)
 {
 	struct module *mod;
-	char buf[8];
+	char buf[MODULE_FLAGS_BUF_SIZE];
 
 	printk(KERN_DEFAULT "Modules linked in:");
 	/* Most callers should already have preempt disabled, but make sure */

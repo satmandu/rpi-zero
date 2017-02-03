@@ -498,6 +498,30 @@ out:
 	return xprt;
 }
 
+/**
+ * svc_reserve - change the space reserved for the reply to a request.
+ * @rqstp:  The request in question
+ * @space: new max space to reserve
+ *
+ * Each request reserves some space on the output queue of the transport
+ * to make sure the reply fits.  This function reduces that reserved
+ * space to be the amount of space used already, plus @space.
+ *
+ */
+void svc_reserve(struct svc_rqst *rqstp, int space)
+{
+	space += rqstp->rq_res.head[0].iov_len;
+
+	if (space < rqstp->rq_reserved) {
+		struct svc_xprt *xprt = rqstp->rq_xprt;
+		atomic_sub((rqstp->rq_reserved - space), &xprt->xpt_reserved);
+		rqstp->rq_reserved = space;
+
+		svc_xprt_enqueue(xprt);
+	}
+}
+EXPORT_SYMBOL_GPL(svc_reserve);
+
 static void svc_xprt_release(struct svc_rqst *rqstp)
 {
 	struct svc_xprt	*xprt = rqstp->rq_xprt;
@@ -511,7 +535,18 @@ static void svc_xprt_release(struct svc_rqst *rqstp)
 	rqstp->rq_res.page_len = 0;
 	rqstp->rq_res.page_base = 0;
 
+	/* Reset response buffer and release
+	 * the reservation.
+	 * But first, check that enough space was reserved
+	 * for the reply, otherwise we have a bug!
+	 */
+	if ((rqstp->rq_res.len) >  rqstp->rq_reserved)
+		printk(KERN_ERR "RPC request reserved %d but used %d\n",
+		       rqstp->rq_reserved,
+		       rqstp->rq_res.len);
+
 	rqstp->rq_res.head[0].iov_len = 0;
+	svc_reserve(rqstp, 0);
 	svc_xprt_release_slot(rqstp);
 	rqstp->rq_xprt = NULL;
 	svc_xprt_put(xprt);
@@ -764,6 +799,8 @@ static int svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 
 	if (test_bit(XPT_CLOSE, &xprt->xpt_flags)) {
 		dprintk("svc_recv: found XPT_CLOSE\n");
+		if (test_and_clear_bit(XPT_KILL_TEMP, &xprt->xpt_flags))
+			xprt->xpt_ops->xpo_kill_temp_xprt(xprt);
 		svc_delete_xprt(xprt);
 		/* Leave XPT_BUSY set on the dead xprt: */
 		goto out;
@@ -792,6 +829,8 @@ static int svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 		else
 			len = xprt->xpt_ops->xpo_recvfrom(rqstp);
 		dprintk("svc: got len=%d\n", len);
+		rqstp->rq_reserved = serv->sv_max_mesg;
+		atomic_add(rqstp->rq_reserved, &xprt->xpt_reserved);
 	}
 	/* clear XPT_BUSY: */
 	svc_xprt_received(xprt);
@@ -965,14 +1004,8 @@ static void svc_age_temp_xprts(unsigned long closure)
 void svc_age_temp_xprts_now(struct svc_serv *serv, struct sockaddr *server_addr)
 {
 	struct svc_xprt *xprt;
-	struct svc_sock *svsk;
-	struct socket *sock;
 	struct list_head *le, *next;
 	LIST_HEAD(to_be_closed);
-	struct linger no_linger = {
-		.l_onoff = 1,
-		.l_linger = 0,
-	};
 
 	spin_lock_bh(&serv->sv_lock);
 	list_for_each_safe(le, next, &serv->sv_tempsocks) {
@@ -989,12 +1022,11 @@ void svc_age_temp_xprts_now(struct svc_serv *serv, struct sockaddr *server_addr)
 		le = to_be_closed.next;
 		list_del_init(le);
 		xprt = list_entry(le, struct svc_xprt, xpt_list);
-		dprintk("svc_age_temp_xprts_now: closing %p\n", xprt);
-		svsk = container_of(xprt, struct svc_sock, sk_xprt);
-		sock = svsk->sk_sock;
-		kernel_setsockopt(sock, SOL_SOCKET, SO_LINGER,
-				  (char *)&no_linger, sizeof(no_linger));
-		svc_close_xprt(xprt);
+		set_bit(XPT_CLOSE, &xprt->xpt_flags);
+		set_bit(XPT_KILL_TEMP, &xprt->xpt_flags);
+		dprintk("svc_age_temp_xprts_now: queuing xprt %p for closing\n",
+				xprt);
+		svc_xprt_enqueue(xprt);
 	}
 }
 EXPORT_SYMBOL_GPL(svc_age_temp_xprts_now);

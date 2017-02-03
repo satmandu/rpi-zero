@@ -231,7 +231,7 @@ static unsigned int mt6323_ldo_get_mode(struct regulator_dev *rdev)
 	return mode;
 }
 
-static struct regulator_ops mt6323_volt_range_ops = {
+static const struct regulator_ops mt6323_volt_range_ops = {
 	.list_voltage = regulator_list_voltage_linear_range,
 	.map_voltage = regulator_map_voltage_linear_range,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
@@ -243,7 +243,7 @@ static struct regulator_ops mt6323_volt_range_ops = {
 	.get_status = mt6323_get_status,
 };
 
-static struct regulator_ops mt6323_volt_table_ops = {
+static const struct regulator_ops mt6323_volt_table_ops = {
 	.list_voltage = regulator_list_voltage_table,
 	.map_voltage = regulator_map_voltage_iterate,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
@@ -257,7 +257,7 @@ static struct regulator_ops mt6323_volt_table_ops = {
 	.get_mode = mt6323_ldo_get_mode,
 };
 
-static struct regulator_ops mt6323_volt_fixed_ops = {
+static const struct regulator_ops mt6323_volt_fixed_ops = {
 	.list_voltage = regulator_list_voltage_linear,
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
@@ -421,5 +421,5 @@ static struct platform_driver mt6323_regulator_driver = {
 module_platform_driver(mt6323_regulator_driver);
 
 MODULE_AUTHOR("Chen Zhong <chen.zhong@mediatek.com>");
-MODULE_DESCRIPTION("Regulator Driver for MediaTek MT6397 PMIC");
+MODULE_DESCRIPTION("Regulator Driver for MediaTek MT6323 PMIC");
 MODULE_LICENSE("GPL v2");

@@ -20,13 +20,14 @@
 #include <asm/xics.h>
 #include <asm/io.h>
 #include <asm/opal.h>
+#include <asm/kvm_ppc.h>
 
 static void icp_opal_teardown_cpu(void)
 {
-	int cpu = smp_processor_id();
+	int hw_cpu = hard_smp_processor_id();
 
 	/* Clear any pending IPI */
-	opal_int_set_mfrr(cpu, 0xff);
+	opal_int_set_mfrr(hw_cpu, 0xff);
 }
 
 static void icp_opal_flush_ipi(void)
@@ -39,7 +40,26 @@ static void icp_opal_flush_ipi(void)
 	 * Should we be flagging idle loop instead?
 	 * Or creating some task to be scheduled?
 	 */
-	opal_int_eoi((0x00 << 24) | XICS_IPI);
+	if (opal_int_eoi((0x00 << 24) | XICS_IPI) > 0)
+		force_external_irq_replay();
+}
+
+static unsigned int icp_opal_get_xirr(void)
+{
+	unsigned int kvm_xirr;
+	__be32 hw_xirr;
+	int64_t rc;
+
+	/* Handle an interrupt latched by KVM first */
+	kvm_xirr = kvmppc_get_xics_latch();
+	if (kvm_xirr)
+		return kvm_xirr;
+
+	/* Then ask OPAL */
+	rc = opal_int_get_xirr(&hw_xirr, false);
+	if (rc < 0)
+		return 0;
+	return be32_to_cpu(hw_xirr);
 }
 
 static unsigned int icp_opal_get_irq(void)
@@ -47,18 +67,14 @@ static unsigned int icp_opal_get_irq(void)
 	unsigned int xirr;
 	unsigned int vec;
 	unsigned int irq;
-	int64_t rc;
 
-	rc = opal_int_get_xirr(&xirr, false);
-	if (rc < 0)
-		return NO_IRQ;
-	xirr = be32_to_cpu(xirr);
+	xirr = icp_opal_get_xirr();
 	vec = xirr & 0x00ffffff;
 	if (vec == XICS_IRQ_SPURIOUS)
-		return NO_IRQ;
+		return 0;
 
 	irq = irq_find_mapping(xics_host, vec);
-	if (likely(irq != NO_IRQ)) {
+	if (likely(irq)) {
 		xics_push_cppr(vec);
 		return irq;
 	}
@@ -67,9 +83,10 @@ static unsigned int icp_opal_get_irq(void)
 	xics_mask_unknown_vec(vec);
 
 	/* We might learn about it later, so EOI it */
-	opal_int_eoi(xirr);
+	if (opal_int_eoi(xirr) > 0)
+		force_external_irq_replay();
 
-	return NO_IRQ;
+	return 0;
 }
 
 static void icp_opal_set_cpu_priority(unsigned char cppr)
@@ -101,14 +118,16 @@ static void icp_opal_eoi(struct irq_data *d)
 
 static void icp_opal_cause_ipi(int cpu, unsigned long data)
 {
-	opal_int_set_mfrr(cpu, IPI_PRIORITY);
+	int hw_cpu = get_hard_smp_processor_id(cpu);
+
+	opal_int_set_mfrr(hw_cpu, IPI_PRIORITY);
 }
 
 static irqreturn_t icp_opal_ipi_action(int irq, void *dev_id)
 {
-	int cpu = smp_processor_id();
+	int hw_cpu = hard_smp_processor_id();
 
-	opal_int_set_mfrr(cpu, 0xff);
+	opal_int_set_mfrr(hw_cpu, 0xff);
 
 	return smp_ipi_demux();
 }

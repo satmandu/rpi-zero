@@ -42,6 +42,7 @@ static int malidp_set_and_wait_config_valid(struct drm_device *drm)
 	struct malidp_hw_device *hwdev = malidp->dev;
 	int ret;
 
+	atomic_set(&malidp->config_valid, 0);
 	hwdev->set_config_valid(hwdev);
 	/* don't wait for config_valid flag if we are in config mode */
 	if (hwdev->in_config_mode(hwdev))
@@ -91,7 +92,7 @@ static void malidp_atomic_commit_tail(struct drm_atomic_state *state)
 
 	drm_atomic_helper_commit_modeset_disables(drm, state);
 	drm_atomic_helper_commit_modeset_enables(drm, state);
-	drm_atomic_helper_commit_planes(drm, state, true);
+	drm_atomic_helper_commit_planes(drm, state, 0);
 
 	malidp_atomic_commit_hw_done(state);
 
@@ -154,6 +155,12 @@ static int malidp_init(struct drm_device *drm)
 	return 0;
 }
 
+static void malidp_fini(struct drm_device *drm)
+{
+	malidp_de_planes_destroy(drm);
+	drm_mode_config_cleanup(drm);
+}
+
 static int malidp_irq_init(struct platform_device *pdev)
 {
 	int irq_de, irq_se, ret = 0;
@@ -196,9 +203,7 @@ static const struct file_operations fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
-#ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
-#endif
 	.poll = drm_poll,
 	.read = drm_read,
 	.llseek = noop_llseek,
@@ -257,6 +262,7 @@ static int malidp_bind(struct device *dev)
 {
 	struct resource *res;
 	struct drm_device *drm;
+	struct device_node *ep;
 	struct malidp_drm *malidp;
 	struct malidp_hw_device *hwdev;
 	struct platform_device *pdev = to_platform_device(dev);
@@ -284,10 +290,8 @@ static int malidp_bind(struct device *dev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	hwdev->regs = devm_ioremap_resource(dev, res);
-	if (IS_ERR(hwdev->regs)) {
-		DRM_ERROR("Failed to map control registers area\n");
+	if (IS_ERR(hwdev->regs))
 		return PTR_ERR(hwdev->regs);
-	}
 
 	hwdev->pclk = devm_clk_get(dev, "pclk");
 	if (IS_ERR(hwdev->pclk))
@@ -311,8 +315,8 @@ static int malidp_bind(struct device *dev)
 		return ret;
 
 	drm = drm_dev_alloc(&malidp_driver, dev);
-	if (!drm) {
-		ret = -ENOMEM;
+	if (IS_ERR(drm)) {
+		ret = PTR_ERR(drm);
 		goto alloc_fail;
 	}
 
@@ -355,16 +359,15 @@ static int malidp_bind(struct device *dev)
 	if (ret < 0)
 		goto init_fail;
 
-	ret = drm_dev_register(drm, 0);
-	if (ret)
-		goto register_fail;
-
 	/* Set the CRTC's port so that the encoder component can find it */
-	malidp->crtc.port = of_graph_get_next_endpoint(dev->of_node, NULL);
+	ep = of_graph_get_next_endpoint(dev->of_node, NULL);
+	if (!ep) {
+		ret = -EINVAL;
+		goto port_fail;
+	}
+	malidp->crtc.port = of_get_next_parent(ep);
 
 	ret = component_bind_all(dev, drm);
-	of_node_put(malidp->crtc.port);
-
 	if (ret) {
 		DRM_ERROR("Failed to bind all components\n");
 		goto bind_fail;
@@ -373,6 +376,8 @@ static int malidp_bind(struct device *dev)
 	ret = malidp_irq_init(pdev);
 	if (ret < 0)
 		goto irq_init_fail;
+
+	drm->irq_enabled = true;
 
 	ret = drm_vblank_init(drm, drm->mode_config.num_crtc);
 	if (ret < 0) {
@@ -392,20 +397,31 @@ static int malidp_bind(struct device *dev)
 	}
 
 	drm_kms_helper_poll_init(drm);
+
+	ret = drm_dev_register(drm, 0);
+	if (ret)
+		goto register_fail;
+
 	return 0;
 
+register_fail:
+	if (malidp->fbdev) {
+		drm_fbdev_cma_fini(malidp->fbdev);
+		malidp->fbdev = NULL;
+	}
 fbdev_fail:
 	drm_vblank_cleanup(drm);
 vblank_fail:
 	malidp_se_irq_fini(drm);
 	malidp_de_irq_fini(drm);
+	drm->irq_enabled = false;
 irq_init_fail:
 	component_unbind_all(dev, drm);
 bind_fail:
-	drm_dev_unregister(drm);
-register_fail:
-	malidp_de_planes_destroy(drm);
-	drm_mode_config_cleanup(drm);
+	of_node_put(malidp->crtc.port);
+	malidp->crtc.port = NULL;
+port_fail:
+	malidp_fini(drm);
 init_fail:
 	drm->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
@@ -426,6 +442,7 @@ static void malidp_unbind(struct device *dev)
 	struct malidp_drm *malidp = drm->dev_private;
 	struct malidp_hw_device *hwdev = malidp->dev;
 
+	drm_dev_unregister(drm);
 	if (malidp->fbdev) {
 		drm_fbdev_cma_fini(malidp->fbdev);
 		malidp->fbdev = NULL;
@@ -435,9 +452,9 @@ static void malidp_unbind(struct device *dev)
 	malidp_de_irq_fini(drm);
 	drm_vblank_cleanup(drm);
 	component_unbind_all(dev, drm);
-	drm_dev_unregister(drm);
-	malidp_de_planes_destroy(drm);
-	drm_mode_config_cleanup(drm);
+	of_node_put(malidp->crtc.port);
+	malidp->crtc.port = NULL;
+	malidp_fini(drm);
 	drm->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
 	clk_disable_unprepare(hwdev->mclk);
@@ -485,7 +502,9 @@ static int malidp_platform_probe(struct platform_device *pdev)
 		return -EAGAIN;
 	}
 
-	component_match_add(&pdev->dev, &match, malidp_compare_dev, port);
+	drm_of_component_match_add(&pdev->dev, &match, malidp_compare_dev,
+				   port);
+	of_node_put(port);
 	return component_master_add_with_match(&pdev->dev, &malidp_master_ops,
 					       match);
 }

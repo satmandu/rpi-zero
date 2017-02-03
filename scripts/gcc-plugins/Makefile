@@ -20,6 +20,7 @@ export HOSTLIBS
 
 $(HOSTLIBS)-y := $(foreach p,$(GCC_PLUGIN),$(if $(findstring /,$(p)),,$(p)))
 always := $($(HOSTLIBS)-y)
+
 $(foreach p,$($(HOSTLIBS)-y:%.so=%),$(eval $(p)-objs := $(p).o))
 
 subdir-y := $(GCC_PLUGIN_SUBDIR)

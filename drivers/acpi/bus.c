@@ -36,6 +36,7 @@
 #ifdef CONFIG_X86
 #include <asm/mpspec.h>
 #endif
+#include <linux/acpi_iort.h>
 #include <linux/pci.h>
 #include <acpi/apei.h>
 #include <linux/dmi.h>
@@ -300,6 +301,14 @@ out_kfree:
 EXPORT_SYMBOL(acpi_run_osc);
 
 bool osc_sb_apei_support_acked;
+
+/*
+ * ACPI 6.0 Section 8.4.4.2 Idle State Coordination
+ * OSPM supports platform coordinated low power idle(LPI) states
+ */
+bool osc_pc_lpi_support_confirmed;
+EXPORT_SYMBOL_GPL(osc_pc_lpi_support_confirmed);
+
 static u8 sb_uuid_str[] = "0811B06E-4A27-44F9-8D60-3CBBC22E7B48";
 static void acpi_bus_osc_support(void)
 {
@@ -320,6 +329,17 @@ static void acpi_bus_osc_support(void)
 		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PPC_OST_SUPPORT;
 
 	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_HOTPLUG_OST_SUPPORT;
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PCLPI_SUPPORT;
+
+#ifdef CONFIG_X86
+	if (boot_cpu_has(X86_FEATURE_HWP)) {
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPC_SUPPORT;
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPCV2_SUPPORT;
+	}
+#endif
+
+	if (IS_ENABLED(CONFIG_SCHED_MC_PRIO))
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPC_DIVERSE_HIGH_SUPPORT;
 
 	if (!ghes_disable)
 		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_APEI_SUPPORT;
@@ -327,9 +347,12 @@ static void acpi_bus_osc_support(void)
 		return;
 	if (ACPI_SUCCESS(acpi_run_osc(handle, &context))) {
 		u32 *capbuf_ret = context.ret.pointer;
-		if (context.ret.length > OSC_SUPPORT_DWORD)
+		if (context.ret.length > OSC_SUPPORT_DWORD) {
 			osc_sb_apei_support_acked =
 				capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_APEI_SUPPORT;
+			osc_pc_lpi_support_confirmed =
+				capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_PCLPI_SUPPORT;
+		}
 		kfree(context.ret.pointer);
 	}
 	/* do we need to check other returned cap? Sounds no */
@@ -951,7 +974,7 @@ void __init acpi_early_init(void)
 	if (!acpi_strict)
 		acpi_gbl_enable_interpreter_slack = TRUE;
 
-	acpi_gbl_permanent_mmap = 1;
+	acpi_permanent_mmap = true;
 
 	/*
 	 * If the machine falls into the DMI check table,
@@ -973,7 +996,8 @@ void __init acpi_early_init(void)
 		goto error0;
 	}
 
-	if (acpi_gbl_group_module_level_code) {
+	if (!acpi_gbl_parse_table_as_term_list &&
+	    acpi_gbl_group_module_level_code) {
 		status = acpi_load_tables();
 		if (ACPI_FAILURE(status)) {
 			printk(KERN_ERR PREFIX
@@ -1062,7 +1086,8 @@ static int __init acpi_bus_init(void)
 	status = acpi_ec_ecdt_probe();
 	/* Ignore result. Not having an ECDT is not fatal. */
 
-	if (!acpi_gbl_group_module_level_code) {
+	if (acpi_gbl_parse_table_as_term_list ||
+	    !acpi_gbl_group_module_level_code) {
 		status = acpi_load_tables();
 		if (ACPI_FAILURE(status)) {
 			printk(KERN_ERR PREFIX
@@ -1174,6 +1199,7 @@ static int __init acpi_init(void)
 	}
 
 	pci_mmcfg_late_init();
+	acpi_iort_init();
 	acpi_scan_init();
 	acpi_ec_init();
 	acpi_debugfs_init();
@@ -1181,6 +1207,7 @@ static int __init acpi_init(void)
 	acpi_wakeup_device_init();
 	acpi_debugger_init();
 	acpi_setup_sb_notify_handler();
+	acpi_set_processor_mapping();
 	return 0;
 }
 

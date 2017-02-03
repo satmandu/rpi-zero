@@ -23,11 +23,7 @@ static unsigned dm_mq_queue_depth = DM_MQ_QUEUE_DEPTH;
 #define RESERVED_REQUEST_BASED_IOS	256
 static unsigned reserved_rq_based_ios = RESERVED_REQUEST_BASED_IOS;
 
-#ifdef CONFIG_DM_MQ_DEFAULT
-static bool use_blk_mq = true;
-#else
-static bool use_blk_mq = false;
-#endif
+static bool use_blk_mq = IS_ENABLED(CONFIG_DM_MQ_DEFAULT);
 
 bool dm_use_blk_mq_default(void)
 {
@@ -73,14 +69,18 @@ static void dm_old_start_queue(struct request_queue *q)
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
+static void dm_mq_start_queue(struct request_queue *q)
+{
+	blk_mq_start_stopped_hw_queues(q, true);
+	blk_mq_kick_requeue_list(q);
+}
+
 void dm_start_queue(struct request_queue *q)
 {
 	if (!q->mq_ops)
 		dm_old_start_queue(q);
-	else {
-		blk_mq_start_stopped_hw_queues(q, true);
-		blk_mq_kick_requeue_list(q);
-	}
+	else
+		dm_mq_start_queue(q);
 }
 
 static void dm_old_stop_queue(struct request_queue *q)
@@ -88,13 +88,17 @@ static void dm_old_stop_queue(struct request_queue *q)
 	unsigned long flags;
 
 	spin_lock_irqsave(q->queue_lock, flags);
-	if (blk_queue_stopped(q)) {
-		spin_unlock_irqrestore(q->queue_lock, flags);
-		return;
-	}
-
-	blk_stop_queue(q);
+	if (!blk_queue_stopped(q))
+		blk_stop_queue(q);
 	spin_unlock_irqrestore(q->queue_lock, flags);
+}
+
+static void dm_mq_stop_queue(struct request_queue *q)
+{
+	if (blk_mq_queue_stopped(q))
+		return;
+
+	blk_mq_quiesce_queue(q);
 }
 
 void dm_stop_queue(struct request_queue *q)
@@ -102,7 +106,7 @@ void dm_stop_queue(struct request_queue *q)
 	if (!q->mq_ops)
 		dm_old_stop_queue(q);
 	else
-		blk_mq_stop_hw_queues(q);
+		dm_mq_stop_queue(q);
 }
 
 static struct dm_rq_target_io *alloc_old_rq_tio(struct mapped_device *md,
@@ -202,6 +206,9 @@ static void rq_end_stats(struct mapped_device *md, struct request *orig)
  */
 static void rq_completed(struct mapped_device *md, int rw, bool run_queue)
 {
+	struct request_queue *q = md->queue;
+	unsigned long flags;
+
 	atomic_dec(&md->pending[rw]);
 
 	/* nudge anyone waiting on suspend queue */
@@ -214,8 +221,11 @@ static void rq_completed(struct mapped_device *md, int rw, bool run_queue)
 	 * back into ->request_fn() could deadlock attempting to grab the
 	 * queue lock again.
 	 */
-	if (!md->queue->mq_ops && run_queue)
-		blk_run_queue_async(md->queue);
+	if (!q->mq_ops && run_queue) {
+		spin_lock_irqsave(q->queue_lock, flags);
+		blk_run_queue_async(q);
+		spin_unlock_irqrestore(q->queue_lock, flags);
+	}
 
 	/*
 	 * dm_put() must be at the end of this function. See the comment above
@@ -289,7 +299,7 @@ static void dm_unprep_request(struct request *rq)
 
 	if (!rq->q->mq_ops) {
 		rq->special = NULL;
-		rq->cmd_flags &= ~REQ_DONTPREP;
+		rq->rq_flags &= ~RQF_DONTPREP;
 	}
 
 	if (clone)
@@ -312,21 +322,27 @@ static void dm_old_requeue_request(struct request *rq)
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
-static void dm_mq_requeue_request(struct request *rq)
+static void __dm_mq_kick_requeue_list(struct request_queue *q, unsigned long msecs)
 {
-	struct request_queue *q = rq->q;
-	unsigned long flags;
-
-	blk_mq_requeue_request(rq);
-	spin_lock_irqsave(q->queue_lock, flags);
-	if (!blk_queue_stopped(q))
-		blk_mq_kick_requeue_list(q);
-	spin_unlock_irqrestore(q->queue_lock, flags);
+	blk_mq_delay_kick_requeue_list(q, msecs);
 }
 
-static void dm_requeue_original_request(struct mapped_device *md,
-					struct request *rq)
+void dm_mq_kick_requeue_list(struct mapped_device *md)
 {
+	__dm_mq_kick_requeue_list(dm_get_md_queue(md), 0);
+}
+EXPORT_SYMBOL(dm_mq_kick_requeue_list);
+
+static void dm_mq_delay_requeue_request(struct request *rq, unsigned long msecs)
+{
+	blk_mq_requeue_request(rq, false);
+	__dm_mq_kick_requeue_list(rq->q, msecs);
+}
+
+static void dm_requeue_original_request(struct dm_rq_target_io *tio, bool delay_requeue)
+{
+	struct mapped_device *md = tio->md;
+	struct request *rq = tio->orig;
 	int rw = rq_data_dir(rq);
 
 	rq_end_stats(md, rq);
@@ -335,7 +351,7 @@ static void dm_requeue_original_request(struct mapped_device *md,
 	if (!rq->q->mq_ops)
 		dm_old_requeue_request(rq);
 	else
-		dm_mq_requeue_request(rq);
+		dm_mq_delay_requeue_request(rq, delay_requeue ? 5000 : 0);
 
 	rq_completed(md, rw, false);
 }
@@ -365,7 +381,7 @@ static void dm_done(struct request *clone, int error, bool mapped)
 		return;
 	else if (r == DM_ENDIO_REQUEUE)
 		/* The target wants to requeue the I/O */
-		dm_requeue_original_request(tio->md, tio->orig);
+		dm_requeue_original_request(tio, false);
 	else {
 		DMWARN("unimplemented target endio return value: %d", r);
 		BUG();
@@ -396,7 +412,7 @@ static void dm_softirq_done(struct request *rq)
 		return;
 	}
 
-	if (rq->cmd_flags & REQ_FAILED)
+	if (rq->rq_flags & RQF_FAILED)
 		mapped = false;
 
 	dm_done(clone, tio->error, mapped);
@@ -425,7 +441,7 @@ static void dm_complete_request(struct request *rq, int error)
  */
 static void dm_kill_unmapped_request(struct request *rq, int error)
 {
-	rq->cmd_flags |= REQ_FAILED;
+	rq->rq_flags |= RQF_FAILED;
 	dm_complete_request(rq, error);
 }
 
@@ -441,7 +457,7 @@ static void end_clone_request(struct request *clone, int error)
 		 * For just cleaning up the information of the queue in which
 		 * the clone was dispatched.
 		 * The clone is *NOT* freed actually here because it is alloced
-		 * from dm own mempool (REQ_ALLOCED isn't set).
+		 * from dm own mempool (RQF_ALLOCED isn't set).
 		 */
 		__blk_put_request(clone->q, clone);
 	}
@@ -462,7 +478,7 @@ static void dm_dispatch_clone_request(struct request *clone, struct request *rq)
 	int r;
 
 	if (blk_queue_io_stat(clone->q))
-		clone->cmd_flags |= REQ_IO_STAT;
+		clone->rq_flags |= RQF_IO_STAT;
 
 	clone->start_time = jiffies;
 	r = blk_insert_cloned_request(clone->q, clone);
@@ -546,7 +562,7 @@ static void init_tio(struct dm_rq_target_io *tio, struct request *rq,
 	if (!md->init_tio_pdu)
 		memset(&tio->info, 0, sizeof(tio->info));
 	if (md->kworker_task)
-		init_kthread_work(&tio->work, map_tio_request);
+		kthread_init_work(&tio->work, map_tio_request);
 }
 
 static struct dm_rq_target_io *dm_old_prep_tio(struct request *rq,
@@ -598,27 +614,30 @@ static int dm_old_prep_fn(struct request_queue *q, struct request *rq)
 		return BLKPREP_DEFER;
 
 	rq->special = tio;
-	rq->cmd_flags |= REQ_DONTPREP;
+	rq->rq_flags |= RQF_DONTPREP;
 
 	return BLKPREP_OK;
 }
 
 /*
  * Returns:
- * 0                : the request has been processed
- * DM_MAPIO_REQUEUE : the original request needs to be requeued
+ * DM_MAPIO_*       : the request has been processed as indicated
+ * DM_MAPIO_REQUEUE : the original request needs to be immediately requeued
  * < 0              : the request was completed due to failure
  */
-static int map_request(struct dm_rq_target_io *tio, struct request *rq,
-		       struct mapped_device *md)
+static int map_request(struct dm_rq_target_io *tio)
 {
 	int r;
 	struct dm_target *ti = tio->ti;
+	struct mapped_device *md = tio->md;
+	struct request *rq = tio->orig;
 	struct request *clone = NULL;
 
 	if (tio->clone) {
 		clone = tio->clone;
 		r = ti->type->map_rq(ti, clone, &tio->info);
+		if (r == DM_MAPIO_DELAY_REQUEUE)
+			return DM_MAPIO_REQUEUE; /* .request_fn requeue is always immediate */
 	} else {
 		r = ti->type->clone_and_map_rq(ti, rq, &tio->info, &clone);
 		if (r < 0) {
@@ -626,9 +645,8 @@ static int map_request(struct dm_rq_target_io *tio, struct request *rq,
 			dm_kill_unmapped_request(rq, r);
 			return r;
 		}
-		if (r != DM_MAPIO_REMAPPED)
-			return r;
-		if (setup_clone(clone, rq, tio, GFP_ATOMIC)) {
+		if (r == DM_MAPIO_REMAPPED &&
+		    setup_clone(clone, rq, tio, GFP_ATOMIC)) {
 			/* -ENOMEM */
 			ti->type->release_clone_rq(clone);
 			return DM_MAPIO_REQUEUE;
@@ -647,7 +665,10 @@ static int map_request(struct dm_rq_target_io *tio, struct request *rq,
 		break;
 	case DM_MAPIO_REQUEUE:
 		/* The target wants to requeue the I/O */
-		dm_requeue_original_request(md, tio->orig);
+		break;
+	case DM_MAPIO_DELAY_REQUEUE:
+		/* The target wants to requeue the I/O after a delay */
+		dm_requeue_original_request(tio, true);
 		break;
 	default:
 		if (r > 0) {
@@ -657,10 +678,9 @@ static int map_request(struct dm_rq_target_io *tio, struct request *rq,
 
 		/* The target wants to complete the I/O */
 		dm_kill_unmapped_request(rq, r);
-		return r;
 	}
 
-	return 0;
+	return r;
 }
 
 static void dm_start_request(struct mapped_device *md, struct request *orig)
@@ -699,11 +719,9 @@ static void dm_start_request(struct mapped_device *md, struct request *orig)
 static void map_tio_request(struct kthread_work *work)
 {
 	struct dm_rq_target_io *tio = container_of(work, struct dm_rq_target_io, work);
-	struct request *rq = tio->orig;
-	struct mapped_device *md = tio->md;
 
-	if (map_request(tio, rq, md) == DM_MAPIO_REQUEUE)
-		dm_requeue_original_request(md, rq);
+	if (map_request(tio) == DM_MAPIO_REQUEUE)
+		dm_requeue_original_request(tio, false);
 }
 
 ssize_t dm_attr_rq_based_seq_io_merge_deadline_show(struct mapped_device *md, char *buf)
@@ -782,7 +800,7 @@ static void dm_old_request_fn(struct request_queue *q)
 			pos = blk_rq_pos(rq);
 
 		if ((dm_old_request_peeked_before_merge_deadline(md) &&
-		     md_in_flight(md) && rq->bio && rq->bio->bi_vcnt == 1 &&
+		     md_in_flight(md) && rq->bio && !bio_multiple_segments(rq->bio) &&
 		     md->last_rq_pos == pos && md->last_rq_rw == rq_data_dir(rq)) ||
 		    (ti->type->busy && ti->type->busy(ti))) {
 			blk_delay_queue(q, 10);
@@ -794,7 +812,7 @@ static void dm_old_request_fn(struct request_queue *q)
 		tio = tio_from_request(rq);
 		/* Establish tio->ti before queuing work (map_tio_request) */
 		tio->ti = ti;
-		queue_kthread_work(&md->kworker, &tio->work);
+		kthread_queue_work(&md->kworker, &tio->work);
 		BUG_ON(!irqs_disabled());
 	}
 }
@@ -816,11 +834,14 @@ int dm_old_init_request_queue(struct mapped_device *md)
 	blk_queue_prep_rq(md->queue, dm_old_prep_fn);
 
 	/* Initialize the request-based DM worker thread */
-	init_kthread_worker(&md->kworker);
+	kthread_init_worker(&md->kworker);
 	md->kworker_task = kthread_run(kthread_worker_fn, &md->kworker,
 				       "kdmwork-%s", dm_device_name(md));
-	if (IS_ERR(md->kworker_task))
-		return PTR_ERR(md->kworker_task);
+	if (IS_ERR(md->kworker_task)) {
+		int error = PTR_ERR(md->kworker_task);
+		md->kworker_task = NULL;
+		return error;
+	}
 
 	elv_register_queue(md->queue);
 
@@ -878,7 +899,7 @@ static int dm_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 	tio->ti = ti;
 
 	/* Direct call is fine since .queue_rq allows allocations */
-	if (map_request(tio, rq, md) == DM_MAPIO_REQUEUE) {
+	if (map_request(tio) == DM_MAPIO_REQUEUE) {
 		/* Undo dm_start_request() before requeuing */
 		rq_end_stats(md, rq);
 		rq_completed(md, rq_data_dir(rq), false);
@@ -890,7 +911,6 @@ static int dm_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 static struct blk_mq_ops dm_mq_ops = {
 	.queue_rq = dm_mq_queue_rq,
-	.map_queue = blk_mq_map_queue,
 	.complete = dm_softirq_done,
 	.init_request = dm_mq_init_request,
 };
@@ -937,7 +957,7 @@ int dm_mq_init_request_queue(struct mapped_device *md, struct dm_table *t)
 	dm_init_md_queue(md);
 
 	/* backfill 'mq' sysfs registration normally done in blk_register_queue */
-	blk_mq_register_disk(md->disk);
+	blk_mq_register_dev(disk_to_dev(md->disk), q);
 
 	return 0;
 

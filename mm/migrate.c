@@ -168,8 +168,6 @@ void putback_movable_pages(struct list_head *l)
 			continue;
 		}
 		list_del(&page->lru);
-		dec_node_page_state(page, NR_ISOLATED_ANON +
-				page_is_file_cache(page));
 		/*
 		 * We isolated non-lru movable page so here we can use
 		 * __PageMovable because LRU page's mapping cannot have
@@ -186,6 +184,8 @@ void putback_movable_pages(struct list_head *l)
 			put_page(page);
 		} else {
 			putback_lru_page(page);
+			dec_node_page_state(page, NR_ISOLATED_ANON +
+					page_is_file_cache(page));
 		}
 	}
 }
@@ -234,7 +234,7 @@ static int remove_migration_pte(struct page *new, struct vm_area_struct *vma,
 		goto unlock;
 
 	get_page(new);
-	pte = pte_mkold(mk_pte(new, vma->vm_page_prot));
+	pte = pte_mkold(mk_pte(new, READ_ONCE(vma->vm_page_prot)));
 	if (pte_swp_soft_dirty(*ptep))
 		pte = pte_mksoft_dirty(pte);
 
@@ -466,13 +466,15 @@ int migrate_page_move_mapping(struct address_space *mapping,
 	 */
 	newpage->index = page->index;
 	newpage->mapping = page->mapping;
-	if (PageSwapBacked(page))
-		__SetPageSwapBacked(newpage);
-
 	get_page(newpage);	/* add cache reference */
-	if (PageSwapCache(page)) {
-		SetPageSwapCache(newpage);
-		set_page_private(newpage, page_private(page));
+	if (PageSwapBacked(page)) {
+		__SetPageSwapBacked(newpage);
+		if (PageSwapCache(page)) {
+			SetPageSwapCache(newpage);
+			set_page_private(newpage, page_private(page));
+		}
+	} else {
+		VM_BUG_ON_PAGE(PageSwapCache(page), page);
 	}
 
 	/* Move dirty while page refs frozen and newpage not yet exposed */
@@ -482,7 +484,7 @@ int migrate_page_move_mapping(struct address_space *mapping,
 		SetPageDirty(newpage);
 	}
 
-	radix_tree_replace_slot(pslot, newpage);
+	radix_tree_replace_slot(&mapping->page_tree, pslot, newpage);
 
 	/*
 	 * Drop cache reference from old page by unfreezing
@@ -513,7 +515,9 @@ int migrate_page_move_mapping(struct address_space *mapping,
 		}
 		if (dirty && mapping_cap_account_dirty(mapping)) {
 			__dec_node_state(oldzone->zone_pgdat, NR_FILE_DIRTY);
+			__dec_zone_state(oldzone, NR_ZONE_WRITE_PENDING);
 			__inc_node_state(newzone->zone_pgdat, NR_FILE_DIRTY);
+			__inc_zone_state(newzone, NR_ZONE_WRITE_PENDING);
 		}
 	}
 	local_irq_enable();
@@ -554,7 +558,7 @@ int migrate_huge_page_move_mapping(struct address_space *mapping,
 
 	get_page(newpage);
 
-	radix_tree_replace_slot(pslot, newpage);
+	radix_tree_replace_slot(&mapping->page_tree, pslot, newpage);
 
 	page_ref_unfreeze(page, expected_count - 1);
 
@@ -1119,8 +1123,15 @@ out:
 		 * restored.
 		 */
 		list_del(&page->lru);
-		dec_node_page_state(page, NR_ISOLATED_ANON +
-				page_is_file_cache(page));
+
+		/*
+		 * Compaction can migrate also non-LRU pages which are
+		 * not accounted to NR_ISOLATED_*. They can be recognized
+		 * as __PageMovable
+		 */
+		if (likely(!__PageMovable(page)))
+			dec_node_page_state(page, NR_ISOLATED_ANON +
+					page_is_file_cache(page));
 	}
 
 	/*
@@ -1932,7 +1943,7 @@ int migrate_misplaced_transhuge_page(struct mm_struct *mm,
 		goto out_dropref;
 
 	new_page = alloc_pages_node(node,
-		(GFP_TRANSHUGE | __GFP_THISNODE) & ~__GFP_RECLAIM,
+		(GFP_TRANSHUGE_LIGHT | __GFP_THISNODE),
 		HPAGE_PMD_ORDER);
 	if (!new_page)
 		goto out_fail;

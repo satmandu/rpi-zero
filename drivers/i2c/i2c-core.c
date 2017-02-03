@@ -30,7 +30,7 @@
 #define pr_fmt(fmt) "i2c-core: " fmt
 
 #include <dt-bindings/i2c/i2c.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/acpi.h>
 #include <linux/clk/clk-conf.h>
 #include <linux/completion.h>
@@ -65,6 +65,9 @@
 #define I2C_ADDR_OFFSET_TEN_BIT	0xa000
 #define I2C_ADDR_OFFSET_SLAVE	0x1000
 
+#define I2C_ADDR_7BITS_MAX	0x77
+#define I2C_ADDR_7BITS_COUNT	(I2C_ADDR_7BITS_MAX + 1)
+
 /* core_lock protects i2c_adapter_idr, and guarantees
    that device detection, deletion of detected devices, and attach_adapter
    calls are serialized */
@@ -77,9 +80,10 @@ static int i2c_detect(struct i2c_adapter *adapter, struct i2c_driver *driver);
 static struct static_key i2c_trace_msg = STATIC_KEY_INIT_FALSE;
 static bool is_registered;
 
-void i2c_transfer_trace_reg(void)
+int i2c_transfer_trace_reg(void)
 {
 	static_key_slow_inc(&i2c_trace_msg);
+	return 0;
 }
 
 void i2c_transfer_trace_unreg(void)
@@ -105,13 +109,14 @@ struct gsb_buffer {
 
 struct i2c_acpi_lookup {
 	struct i2c_board_info *info;
-	struct i2c_adapter *adapter; /* set only when registering slaves */
 	acpi_handle adapter_handle;
 	acpi_handle device_handle;
+	acpi_handle search_handle;
+	u32 speed;
 	u32 min_speed;
 };
 
-static int i2c_acpi_find_resource(struct acpi_resource *ares, void *data)
+static int i2c_acpi_fill_info(struct acpi_resource *ares, void *data)
 {
 	struct i2c_acpi_lookup *lookup = data;
 	struct i2c_board_info *info = lookup->info;
@@ -132,82 +137,18 @@ static int i2c_acpi_find_resource(struct acpi_resource *ares, void *data)
 		return 1;
 
 	info->addr = sb->slave_address;
+	lookup->speed = sb->connection_speed;
 	if (sb->access_mode == ACPI_I2C_10BIT_MODE)
 		info->flags |= I2C_CLIENT_TEN;
-	/* Save speed of the slowest device */
-	if (sb->connection_speed < lookup->min_speed)
-		lookup->min_speed = sb->connection_speed;
 
 	return 1;
 }
 
-static acpi_status i2c_acpi_slave_lookup(acpi_handle handle, u32 level,
-					 void *data, void **return_value)
+static int i2c_acpi_do_lookup(struct acpi_device *adev,
+			      struct i2c_acpi_lookup *lookup)
 {
-	struct i2c_acpi_lookup *lookup = data;
-	struct i2c_adapter *adapter = lookup->adapter;
+	struct i2c_board_info *info = lookup->info;
 	struct list_head resource_list;
-	struct resource_entry *entry;
-	struct i2c_board_info info;
-	struct acpi_device *adev;
-	int ret;
-
-	if (acpi_bus_get_device(handle, &adev))
-		return AE_OK;
-	if (acpi_bus_get_status(adev) || !adev->status.present)
-		return AE_OK;
-
-	memset(&info, 0, sizeof(info));
-	info.fwnode = acpi_fwnode_handle(adev);
-
-	lookup->device_handle = handle;
-	lookup->info = &info;
-
-	/*
-	 * Look up for I2cSerialBus resource with ResourceSource that
-	 * matches with this adapter.
-	 */
-	INIT_LIST_HEAD(&resource_list);
-	ret = acpi_dev_get_resources(adev, &resource_list,
-				     i2c_acpi_find_resource, lookup);
-	acpi_dev_free_resource_list(&resource_list);
-
-	if (ret < 0 || !info.addr || !lookup->adapter)
-		return AE_OK;
-
-	/* Then fill IRQ number if any */
-	ret = acpi_dev_get_resources(adev, &resource_list, NULL, NULL);
-	if (ret < 0)
-		return AE_OK;
-
-	resource_list_for_each_entry(entry, &resource_list) {
-		if (resource_type(entry->res) == IORESOURCE_IRQ) {
-			info.irq = entry->res->start;
-			break;
-		}
-	}
-
-	acpi_dev_free_resource_list(&resource_list);
-
-	adev->power.flags.ignore_parent = true;
-	strlcpy(info.type, dev_name(&adev->dev), sizeof(info.type));
-	if (!i2c_new_device(adapter, &info)) {
-		adev->power.flags.ignore_parent = false;
-		dev_err(&adapter->dev,
-			"failed to add I2C device %s from ACPI\n",
-			dev_name(&adev->dev));
-	}
-
-	return AE_OK;
-}
-
-static int i2c_acpi_get_info(struct acpi_device *adev,
-			     struct i2c_board_info *info,
-			     acpi_handle *adapter_handle)
-{
-	struct list_head resource_list;
-	struct resource_entry *entry;
-	struct i2c_acpi_lookup lookup;
 	int ret;
 
 	if (acpi_bus_get_status(adev) || !adev->status.present ||
@@ -215,24 +156,58 @@ static int i2c_acpi_get_info(struct acpi_device *adev,
 		return -EINVAL;
 
 	memset(info, 0, sizeof(*info));
-	info->fwnode = acpi_fwnode_handle(adev);
-
-	memset(&lookup, 0, sizeof(lookup));
-	lookup.device_handle = acpi_device_handle(adev);
-	lookup.info = info;
+	lookup->device_handle = acpi_device_handle(adev);
 
 	/* Look up for I2cSerialBus resource */
 	INIT_LIST_HEAD(&resource_list);
 	ret = acpi_dev_get_resources(adev, &resource_list,
-				     i2c_acpi_find_resource, &lookup);
+				     i2c_acpi_fill_info, lookup);
 	acpi_dev_free_resource_list(&resource_list);
 
 	if (ret < 0 || !info->addr)
 		return -EINVAL;
 
-	*adapter_handle = lookup.adapter_handle;
+	return 0;
+}
+
+static int i2c_acpi_get_info(struct acpi_device *adev,
+			     struct i2c_board_info *info,
+			     struct i2c_adapter *adapter,
+			     acpi_handle *adapter_handle)
+{
+	struct list_head resource_list;
+	struct resource_entry *entry;
+	struct i2c_acpi_lookup lookup;
+	int ret;
+
+	memset(&lookup, 0, sizeof(lookup));
+	lookup.info = info;
+
+	ret = i2c_acpi_do_lookup(adev, &lookup);
+	if (ret)
+		return ret;
+
+	if (adapter) {
+		/* The adapter must match the one in I2cSerialBus() connector */
+		if (ACPI_HANDLE(&adapter->dev) != lookup.adapter_handle)
+			return -ENODEV;
+	} else {
+		struct acpi_device *adapter_adev;
+
+		/* The adapter must be present */
+		if (acpi_bus_get_device(lookup.adapter_handle, &adapter_adev))
+			return -ENODEV;
+		if (acpi_bus_get_status(adapter_adev) ||
+		    !adapter_adev->status.present)
+			return -ENODEV;
+	}
+
+	info->fwnode = acpi_fwnode_handle(adev);
+	if (adapter_handle)
+		*adapter_handle = lookup.adapter_handle;
 
 	/* Then fill IRQ number if any */
+	INIT_LIST_HEAD(&resource_list);
 	ret = acpi_dev_get_resources(adev, &resource_list, NULL, NULL);
 	if (ret < 0)
 		return -EINVAL;
@@ -271,16 +246,12 @@ static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
 {
 	struct i2c_adapter *adapter = data;
 	struct acpi_device *adev;
-	acpi_handle adapter_handle;
 	struct i2c_board_info info;
 
 	if (acpi_bus_get_device(handle, &adev))
 		return AE_OK;
 
-	if (i2c_acpi_get_info(adev, &info, &adapter_handle))
-		return AE_OK;
-
-	if (adapter_handle != ACPI_HANDLE(&adapter->dev))
+	if (i2c_acpi_get_info(adev, &info, adapter, NULL))
 		return AE_OK;
 
 	i2c_acpi_register_device(adapter, adev, &info);
@@ -289,14 +260,6 @@ static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
 }
 
 #define I2C_ACPI_MAX_SCAN_DEPTH 32
-
-static acpi_status i2c_acpi_walk(struct i2c_acpi_lookup *lookup)
-{
-	return acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
-				   I2C_ACPI_MAX_SCAN_DEPTH,
-				   i2c_acpi_slave_lookup, NULL,
-				   lookup, NULL);
-}
 
 /**
  * i2c_acpi_register_devices - enumerate I2C slave devices behind adapter
@@ -308,19 +271,38 @@ static acpi_status i2c_acpi_walk(struct i2c_acpi_lookup *lookup)
  */
 static void i2c_acpi_register_devices(struct i2c_adapter *adap)
 {
-	struct i2c_acpi_lookup lookup;
 	acpi_status status;
 
 	if (!has_acpi_companion(&adap->dev))
 		return;
 
-	memset(&lookup, 0, sizeof(lookup));
-	lookup.adapter = adap;
-	lookup.adapter_handle = ACPI_HANDLE(&adap->dev);
-
-	status = i2c_acpi_walk(&lookup);
+	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
+				     I2C_ACPI_MAX_SCAN_DEPTH,
+				     i2c_acpi_add_device, NULL,
+				     adap, NULL);
 	if (ACPI_FAILURE(status))
 		dev_warn(&adap->dev, "failed to enumerate I2C slaves\n");
+}
+
+static acpi_status i2c_acpi_lookup_speed(acpi_handle handle, u32 level,
+					   void *data, void **return_value)
+{
+	struct i2c_acpi_lookup *lookup = data;
+	struct acpi_device *adev;
+
+	if (acpi_bus_get_device(handle, &adev))
+		return AE_OK;
+
+	if (i2c_acpi_do_lookup(adev, lookup))
+		return AE_OK;
+
+	if (lookup->search_handle != lookup->adapter_handle)
+		return AE_OK;
+
+	if (lookup->speed <= lookup->min_speed)
+		lookup->min_speed = lookup->speed;
+
+	return AE_OK;
 }
 
 /**
@@ -335,16 +317,22 @@ static void i2c_acpi_register_devices(struct i2c_adapter *adap)
 u32 i2c_acpi_find_bus_speed(struct device *dev)
 {
 	struct i2c_acpi_lookup lookup;
+	struct i2c_board_info dummy;
 	acpi_status status;
 
 	if (!has_acpi_companion(dev))
 		return 0;
 
 	memset(&lookup, 0, sizeof(lookup));
-	lookup.adapter_handle = ACPI_HANDLE(dev);
+	lookup.search_handle = ACPI_HANDLE(dev);
 	lookup.min_speed = UINT_MAX;
+	lookup.info = &dummy;
 
-	status = i2c_acpi_walk(&lookup);
+	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
+				     I2C_ACPI_MAX_SCAN_DEPTH,
+				     i2c_acpi_lookup_speed, NULL,
+				     &lookup, NULL);
+
 	if (ACPI_FAILURE(status)) {
 		dev_warn(dev, "unable to find I2C bus speed from ACPI\n");
 		return 0;
@@ -397,7 +385,7 @@ static int i2c_acpi_notify(struct notifier_block *nb, unsigned long value,
 
 	switch (value) {
 	case ACPI_RECONFIG_DEVICE_ADD:
-		if (i2c_acpi_get_info(adev, &info, &adapter_handle))
+		if (i2c_acpi_get_info(adev, &info, NULL, &adapter_handle))
 			break;
 
 		adapter = i2c_acpi_find_adapter_by_handle(adapter_handle);
@@ -692,9 +680,12 @@ static inline int i2c_acpi_install_space_handler(struct i2c_adapter *adapter)
 
 /* ------------------------------------------------------------------------- */
 
-static const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
+const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
 						const struct i2c_client *client)
 {
+	if (!(id && client))
+		return NULL;
+
 	while (id->name[0]) {
 		if (strcmp(client->name, id->name) == 0)
 			return id;
@@ -702,17 +693,16 @@ static const struct i2c_device_id *i2c_match_id(const struct i2c_device_id *id,
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(i2c_match_id);
 
 static int i2c_device_match(struct device *dev, struct device_driver *drv)
 {
 	struct i2c_client	*client = i2c_verify_client(dev);
 	struct i2c_driver	*driver;
 
-	if (!client)
-		return 0;
 
 	/* Attempt an OF style match */
-	if (of_driver_match_device(dev, drv))
+	if (i2c_of_match_device(drv->of_match_table, client))
 		return 1;
 
 	/* Then ACPI style match */
@@ -720,9 +710,10 @@ static int i2c_device_match(struct device *dev, struct device_driver *drv)
 		return 1;
 
 	driver = to_i2c_driver(drv);
-	/* match on an id table if there is one */
-	if (driver->id_table)
-		return i2c_match_id(driver->id_table, client) != NULL;
+
+	/* Finally an I2C match */
+	if (i2c_match_id(driver->id_table, client))
+		return 1;
 
 	return 0;
 }
@@ -909,6 +900,25 @@ static void i2c_init_recovery(struct i2c_adapter *adap)
 	adap->bus_recovery_info = NULL;
 }
 
+static int i2c_smbus_host_notify_to_irq(const struct i2c_client *client)
+{
+	struct i2c_adapter *adap = client->adapter;
+	unsigned int irq;
+
+	if (!adap->host_notify_domain)
+		return -ENXIO;
+
+	if (client->flags & I2C_CLIENT_TEN)
+		return -EINVAL;
+
+	irq = irq_find_mapping(adap->host_notify_domain, client->addr);
+	if (!irq)
+		irq = irq_create_mapping(adap->host_notify_domain,
+					 client->addr);
+
+	return irq > 0 ? irq : -ENXIO;
+}
+
 static int i2c_device_probe(struct device *dev)
 {
 	struct i2c_client	*client = i2c_verify_client(dev);
@@ -921,7 +931,10 @@ static int i2c_device_probe(struct device *dev)
 	if (!client->irq) {
 		int irq = -ENOENT;
 
-		if (dev->of_node) {
+		if (client->flags & I2C_CLIENT_HOST_NOTIFY) {
+			dev_dbg(dev, "Using Host Notify IRQ\n");
+			irq = i2c_smbus_host_notify_to_irq(client);
+		} else if (dev->of_node) {
 			irq = of_irq_get_byname(dev->of_node, "irq");
 			if (irq == -EINVAL || irq == -ENODATA)
 				irq = of_irq_get(dev->of_node, 0);
@@ -930,6 +943,7 @@ static int i2c_device_probe(struct device *dev)
 		}
 		if (irq == -EPROBE_DEFER)
 			return irq;
+
 		if (irq < 0)
 			irq = 0;
 
@@ -937,7 +951,13 @@ static int i2c_device_probe(struct device *dev)
 	}
 
 	driver = to_i2c_driver(dev->driver);
-	if (!driver->probe || !driver->id_table)
+
+	/*
+	 * An I2C ID table is not mandatory, if and only if, a suitable Device
+	 * Tree match table entry is supplied for the probing device.
+	 */
+	if (!driver->id_table &&
+	    !i2c_of_match_device(dev->driver->of_match_table, client))
 		return -ENODEV;
 
 	if (client->flags & I2C_CLIENT_WAKE) {
@@ -959,7 +979,7 @@ static int i2c_device_probe(struct device *dev)
 			status = 0;
 
 		if (status)
-			dev_warn(&client->dev, "failed to set up wakeup irq");
+			dev_warn(&client->dev, "failed to set up wakeup irq\n");
 	}
 
 	dev_dbg(dev, "probe\n");
@@ -972,7 +992,18 @@ static int i2c_device_probe(struct device *dev)
 	if (status == -EPROBE_DEFER)
 		goto err_clear_wakeup_irq;
 
-	status = driver->probe(client, i2c_match_id(driver->id_table, client));
+	/*
+	 * When there are no more users of probe(),
+	 * rename probe_new to probe.
+	 */
+	if (driver->probe_new)
+		status = driver->probe_new(client);
+	else if (driver->probe)
+		status = driver->probe(client,
+				       i2c_match_id(driver->id_table, client));
+	else
+		status = -EINVAL;
+
 	if (status)
 		goto err_detach_pm_domain;
 
@@ -1314,8 +1345,9 @@ i2c_new_device(struct i2c_adapter *adap, struct i2c_board_info const *info)
 	return client;
 
 out_err:
-	dev_err(&adap->dev, "Failed to register i2c client %s at 0x%02x "
-		"(%d)\n", client->name, client->addr, status);
+	dev_err(&adap->dev,
+		"Failed to register i2c client %s at 0x%02x (%d)\n",
+		client->name, client->addr, status);
 out_err_silent:
 	kfree(client);
 	return NULL;
@@ -1441,21 +1473,19 @@ static void i2c_adapter_dev_release(struct device *dev)
 	complete(&adap->dev_released);
 }
 
-/*
- * This function is only needed for mutex_lock_nested, so it is never
- * called unless locking correctness checking is enabled. Thus we
- * make it inline to avoid a compiler warning. That's what gcc ends up
- * doing anyway.
- */
-static inline unsigned int i2c_adapter_depth(struct i2c_adapter *adapter)
+unsigned int i2c_adapter_depth(struct i2c_adapter *adapter)
 {
 	unsigned int depth = 0;
 
 	while ((adapter = i2c_parent_is_i2c_adapter(adapter)))
 		depth++;
 
+	WARN_ONCE(depth >= MAX_LOCKDEP_SUBCLASSES,
+		  "adapter depth exceeds lockdep subclass limit\n");
+
 	return depth;
 }
+EXPORT_SYMBOL_GPL(i2c_adapter_depth);
 
 /*
  * Let users instantiate I2C devices through sysfs. This can be used when
@@ -1674,13 +1704,16 @@ static struct i2c_client *of_i2c_register_device(struct i2c_adapter *adap,
 
 	if (i2c_check_addr_validity(addr, info.flags)) {
 		dev_err(&adap->dev, "of_i2c: invalid addr=%x on %s\n",
-			info.addr, node->full_name);
+			addr, node->full_name);
 		return ERR_PTR(-EINVAL);
 	}
 
 	info.addr = addr;
 	info.of_node = of_node_get(node);
 	info.archdata = &dev_ad;
+
+	if (of_property_read_bool(node, "host-notify"))
+		info.flags |= I2C_CLIENT_HOST_NOTIFY;
 
 	if (of_get_property(node, "wakeup-source", NULL))
 		info.flags |= I2C_CLIENT_WAKE;
@@ -1698,6 +1731,7 @@ static struct i2c_client *of_i2c_register_device(struct i2c_adapter *adap,
 static void of_i2c_register_devices(struct i2c_adapter *adap)
 {
 	struct device_node *bus, *node;
+	struct i2c_client *client;
 
 	/* Only register child devices if the adapter has a node pointer set */
 	if (!adap->dev.of_node)
@@ -1712,7 +1746,14 @@ static void of_i2c_register_devices(struct i2c_adapter *adap)
 	for_each_available_child_of_node(bus, node) {
 		if (of_node_test_and_set_flag(node, OF_POPULATED))
 			continue;
-		of_i2c_register_device(adap, node);
+
+		client = of_i2c_register_device(adap, node);
+		if (IS_ERR(client)) {
+			dev_warn(&adap->dev,
+				 "Failed to create I2C device for %s\n",
+				 node->full_name);
+			of_node_clear_flag(node, OF_POPULATED);
+		}
 	}
 
 	of_node_put(bus);
@@ -1776,6 +1817,52 @@ struct i2c_adapter *of_get_i2c_adapter_by_node(struct device_node *node)
 	return adapter;
 }
 EXPORT_SYMBOL(of_get_i2c_adapter_by_node);
+
+static const struct of_device_id*
+i2c_of_match_device_sysfs(const struct of_device_id *matches,
+				  struct i2c_client *client)
+{
+	const char *name;
+
+	for (; matches->compatible[0]; matches++) {
+		/*
+		 * Adding devices through the i2c sysfs interface provides us
+		 * a string to match which may be compatible with the device
+		 * tree compatible strings, however with no actual of_node the
+		 * of_match_device() will not match
+		 */
+		if (sysfs_streq(client->name, matches->compatible))
+			return matches;
+
+		name = strchr(matches->compatible, ',');
+		if (!name)
+			name = matches->compatible;
+		else
+			name++;
+
+		if (sysfs_streq(client->name, name))
+			return matches;
+	}
+
+	return NULL;
+}
+
+const struct of_device_id
+*i2c_of_match_device(const struct of_device_id *matches,
+		     struct i2c_client *client)
+{
+	const struct of_device_id *match;
+
+	if (!(client && matches))
+		return NULL;
+
+	match = of_match_device(matches, &client->dev);
+	if (match)
+		return match;
+
+	return i2c_of_match_device_sysfs(matches, client);
+}
+EXPORT_SYMBOL_GPL(i2c_of_match_device);
 #else
 static void of_i2c_register_devices(struct i2c_adapter *adap) { }
 #endif /* CONFIG_OF */
@@ -1790,8 +1877,8 @@ static int i2c_do_add_adapter(struct i2c_driver *driver,
 	if (driver->attach_adapter) {
 		dev_warn(&adap->dev, "%s: attach_adapter method is deprecated\n",
 			 driver->driver.name);
-		dev_warn(&adap->dev, "Please use another way to instantiate "
-			 "your i2c_client\n");
+		dev_warn(&adap->dev,
+			 "Please use another way to instantiate your i2c_client\n");
 		/* We ignore the return code; if it fails, too bad */
 		driver->attach_adapter(adap);
 	}
@@ -1802,6 +1889,85 @@ static int __process_new_adapter(struct device_driver *d, void *data)
 {
 	return i2c_do_add_adapter(to_i2c_driver(d), data);
 }
+
+static const struct i2c_lock_operations i2c_adapter_lock_ops = {
+	.lock_bus =    i2c_adapter_lock_bus,
+	.trylock_bus = i2c_adapter_trylock_bus,
+	.unlock_bus =  i2c_adapter_unlock_bus,
+};
+
+static void i2c_host_notify_irq_teardown(struct i2c_adapter *adap)
+{
+	struct irq_domain *domain = adap->host_notify_domain;
+	irq_hw_number_t hwirq;
+
+	if (!domain)
+		return;
+
+	for (hwirq = 0 ; hwirq < I2C_ADDR_7BITS_COUNT ; hwirq++)
+		irq_dispose_mapping(irq_find_mapping(domain, hwirq));
+
+	irq_domain_remove(domain);
+	adap->host_notify_domain = NULL;
+}
+
+static int i2c_host_notify_irq_map(struct irq_domain *h,
+					  unsigned int virq,
+					  irq_hw_number_t hw_irq_num)
+{
+	irq_set_chip_and_handler(virq, &dummy_irq_chip, handle_simple_irq);
+
+	return 0;
+}
+
+static const struct irq_domain_ops i2c_host_notify_irq_ops = {
+	.map = i2c_host_notify_irq_map,
+};
+
+static int i2c_setup_host_notify_irq_domain(struct i2c_adapter *adap)
+{
+	struct irq_domain *domain;
+
+	if (!i2c_check_functionality(adap, I2C_FUNC_SMBUS_HOST_NOTIFY))
+		return 0;
+
+	domain = irq_domain_create_linear(adap->dev.fwnode,
+					  I2C_ADDR_7BITS_COUNT,
+					  &i2c_host_notify_irq_ops, adap);
+	if (!domain)
+		return -ENOMEM;
+
+	adap->host_notify_domain = domain;
+
+	return 0;
+}
+
+/**
+ * i2c_handle_smbus_host_notify - Forward a Host Notify event to the correct
+ * I2C client.
+ * @adap: the adapter
+ * @addr: the I2C address of the notifying device
+ * Context: can't sleep
+ *
+ * Helper function to be called from an I2C bus driver's interrupt
+ * handler. It will schedule the Host Notify IRQ.
+ */
+int i2c_handle_smbus_host_notify(struct i2c_adapter *adap, unsigned short addr)
+{
+	int irq;
+
+	if (!adap)
+		return -EINVAL;
+
+	irq = irq_find_mapping(adap->host_notify_domain, addr);
+	if (irq <= 0)
+		return -ENXIO;
+
+	generic_handle_irq(irq);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(i2c_handle_smbus_host_notify);
 
 static int i2c_register_adapter(struct i2c_adapter *adap)
 {
@@ -1822,11 +1988,8 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 		goto out_list;
 	}
 
-	if (!adap->lock_bus) {
-		adap->lock_bus = i2c_adapter_lock_bus;
-		adap->trylock_bus = i2c_adapter_trylock_bus;
-		adap->unlock_bus = i2c_adapter_unlock_bus;
-	}
+	if (!adap->lock_ops)
+		adap->lock_ops = &i2c_adapter_lock_ops;
 
 	rt_mutex_init(&adap->bus_lock);
 	rt_mutex_init(&adap->mux_lock);
@@ -1836,6 +1999,14 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 	/* Set default timeout to 1 second if not already set */
 	if (adap->timeout == 0)
 		adap->timeout = HZ;
+
+	/* register soft irqs for Host Notify */
+	res = i2c_setup_host_notify_irq_domain(adap);
+	if (res) {
+		pr_err("adapter '%s': can't create Host Notify IRQs (%d)\n",
+		       adap->name, res);
+		goto out_list;
+	}
 
 	dev_set_name(&adap->dev, "i2c-%d", adap->nr);
 	adap->dev.bus = &i2c_bus_type;
@@ -2074,6 +2245,8 @@ void i2c_del_adapter(struct i2c_adapter *adap)
 
 	pm_runtime_disable(&adap->dev);
 
+	i2c_host_notify_irq_teardown(adap);
+
 	/* wait until all references to the device are gone
 	 *
 	 * FIXME: This is old code and should ideally be replaced by an
@@ -2185,6 +2358,7 @@ int i2c_register_driver(struct module *owner, struct i2c_driver *driver)
 	/* add the driver to the list of i2c drivers in the driver core */
 	driver->driver.owner = owner;
 	driver->driver.bus = &i2c_bus_type;
+	INIT_LIST_HEAD(&driver->clients);
 
 	/* When registration returns, the driver core
 	 * will have called probe() for all matching-but-unbound devices.
@@ -2195,7 +2369,6 @@ int i2c_register_driver(struct module *owner, struct i2c_driver *driver)
 
 	pr_debug("driver [%s] registered\n", driver->driver.name);
 
-	INIT_LIST_HEAD(&driver->clients);
 	/* Walk the adapters that are already present */
 	i2c_for_each_dev(driver, __process_new_driver);
 
@@ -2313,6 +2486,7 @@ static int of_i2c_notify(struct notifier_block *nb, unsigned long action,
 		if (IS_ERR(client)) {
 			dev_err(&adap->dev, "failed to create client for '%s'\n",
 				 rd->dn->full_name);
+			of_node_clear_flag(rd->dn, OF_POPULATED);
 			return notifier_from_errno(PTR_ERR(client));
 		}
 		break;
@@ -2563,15 +2737,16 @@ int i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	if (adap->algo->master_xfer) {
 #ifdef DEBUG
 		for (ret = 0; ret < num; ret++) {
-			dev_dbg(&adap->dev, "master_xfer[%d] %c, addr=0x%02x, "
-				"len=%d%s\n", ret, (msgs[ret].flags & I2C_M_RD)
-				? 'R' : 'W', msgs[ret].addr, msgs[ret].len,
+			dev_dbg(&adap->dev,
+				"master_xfer[%d] %c, addr=0x%02x, len=%d%s\n",
+				ret, (msgs[ret].flags & I2C_M_RD) ? 'R' : 'W',
+				msgs[ret].addr, msgs[ret].len,
 				(msgs[ret].flags & I2C_M_RECV_LEN) ? "+" : "");
 		}
 #endif
 
 		if (in_atomic() || irqs_disabled()) {
-			ret = adap->trylock_bus(adap, I2C_LOCK_SEGMENT);
+			ret = i2c_trylock_bus(adap, I2C_LOCK_SEGMENT);
 			if (!ret)
 				/* I2C activity is ongoing. */
 				return -EAGAIN;
@@ -2731,9 +2906,9 @@ static int i2c_detect_address(struct i2c_client *temp_client,
 
 	/* Consistency check */
 	if (info.type[0] == '\0') {
-		dev_err(&adapter->dev, "%s detection function provided "
-			"no name for 0x%x\n", driver->driver.name,
-			addr);
+		dev_err(&adapter->dev,
+			"%s detection function provided no name for 0x%x\n",
+			driver->driver.name, addr);
 	} else {
 		struct i2c_client *client;
 
@@ -2771,9 +2946,8 @@ static int i2c_detect(struct i2c_adapter *adapter, struct i2c_driver *driver)
 	/* Warn that the adapter lost class based instantiation */
 	if (adapter->class == I2C_CLASS_DEPRECATED) {
 		dev_dbg(&adapter->dev,
-			"This adapter dropped support for I2C classes and "
-			"won't auto-detect %s devices anymore. If you need it, check "
-			"'Documentation/i2c/instantiating-devices' for alternatives.\n",
+			"This adapter dropped support for I2C classes and won't auto-detect %s devices anymore. "
+			"If you need it, check 'Documentation/i2c/instantiating-devices' for alternatives.\n",
 			driver->driver.name);
 		return 0;
 	}
@@ -2789,8 +2963,9 @@ static int i2c_detect(struct i2c_adapter *adapter, struct i2c_driver *driver)
 	temp_client->adapter = adapter;
 
 	for (i = 0; address_list[i] != I2C_CLIENT_END; i += 1) {
-		dev_dbg(&adapter->dev, "found normal entry for adapter %d, "
-			"addr 0x%02x\n", adap_id, address_list[i]);
+		dev_dbg(&adapter->dev,
+			"found normal entry for adapter %d, addr 0x%02x\n",
+			adap_id, address_list[i]);
 		temp_client->addr = address_list[i];
 		err = i2c_detect_address(temp_client, driver);
 		if (unlikely(err))
@@ -2822,15 +2997,16 @@ i2c_new_probed_device(struct i2c_adapter *adap,
 	for (i = 0; addr_list[i] != I2C_CLIENT_END; i++) {
 		/* Check address validity */
 		if (i2c_check_7bit_addr_validity_strict(addr_list[i]) < 0) {
-			dev_warn(&adap->dev, "Invalid 7-bit address "
-				 "0x%02x\n", addr_list[i]);
+			dev_warn(&adap->dev, "Invalid 7-bit address 0x%02x\n",
+				 addr_list[i]);
 			continue;
 		}
 
 		/* Check address availability (7 bit, no need to encode flags) */
 		if (i2c_check_addr_busy(adap, addr_list[i])) {
-			dev_dbg(&adap->dev, "Address 0x%02x already in "
-				"use, not probing\n", addr_list[i]);
+			dev_dbg(&adap->dev,
+				"Address 0x%02x already in use, not probing\n",
+				addr_list[i]);
 			continue;
 		}
 
@@ -3456,7 +3632,7 @@ int i2c_slave_register(struct i2c_client *client, i2c_slave_cb_t slave_cb)
 	int ret;
 
 	if (!client || !slave_cb) {
-		WARN(1, "insufficent data\n");
+		WARN(1, "insufficient data\n");
 		return -EINVAL;
 	}
 

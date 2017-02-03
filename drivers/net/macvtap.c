@@ -275,7 +275,6 @@ static void macvtap_put_queue(struct macvtap_queue *q)
 	rtnl_unlock();
 
 	synchronize_rcu();
-	skb_array_cleanup(&q->skb_array);
 	sock_put(&q->sk);
 }
 
@@ -438,7 +437,7 @@ static int macvtap_get_minor(struct macvlan_dev *vlan)
 	if (retval >= 0) {
 		vlan->minor = retval;
 	} else if (retval == -ENOSPC) {
-		printk(KERN_ERR "too many macvtap devices\n");
+		netdev_err(vlan->dev, "Too many macvtap devices\n");
 		retval = -EINVAL;
 	}
 	mutex_unlock(&minor_lock);
@@ -492,7 +491,13 @@ static int macvtap_newlink(struct net *src_net,
 	/* Don't put anything that may fail after macvlan_common_newlink
 	 * because we can't undo what it does.
 	 */
-	return macvlan_common_newlink(src_net, dev, tb, data);
+	err = macvlan_common_newlink(src_net, dev, tb, data);
+	if (err) {
+		netdev_rx_handler_unregister(dev);
+		return err;
+	}
+
+	return 0;
 }
 
 static void macvtap_dellink(struct net_device *dev,
@@ -533,10 +538,8 @@ static void macvtap_sock_write_space(struct sock *sk)
 static void macvtap_sock_destruct(struct sock *sk)
 {
 	struct macvtap_queue *q = container_of(sk, struct macvtap_queue, sk);
-	struct sk_buff *skb;
 
-	while ((skb = skb_array_consume(&q->skb_array)) != NULL)
-		kfree(skb);
+	skb_array_cleanup(&q->skb_array);
 }
 
 static int macvtap_open(struct inode *inode, struct file *file)
@@ -676,7 +679,6 @@ static ssize_t macvtap_get_user(struct macvtap_queue *q, struct msghdr *m,
 	int depth;
 	bool zerocopy = false;
 	size_t linear;
-	ssize_t n;
 
 	if (q->flags & IFF_VNET_HDR) {
 		vnet_hdr_len = q->vnet_hdr_sz;
@@ -687,8 +689,7 @@ static ssize_t macvtap_get_user(struct macvtap_queue *q, struct msghdr *m,
 		len -= vnet_hdr_len;
 
 		err = -EFAULT;
-		n = copy_from_iter(&vnet_hdr, sizeof(vnet_hdr), from);
-		if (n != sizeof(vnet_hdr))
+		if (!copy_from_iter_full(&vnet_hdr, sizeof(vnet_hdr), from))
 			goto err;
 		iov_iter_advance(from, vnet_hdr_len - sizeof(vnet_hdr));
 		if ((vnet_hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) &&
@@ -739,13 +740,8 @@ static ssize_t macvtap_get_user(struct macvtap_queue *q, struct msghdr *m,
 
 	if (zerocopy)
 		err = zerocopy_sg_from_iter(skb, from);
-	else {
+	else
 		err = skb_copy_datagram_from_iter(skb, 0, from, len);
-		if (!err && m && m->msg_control) {
-			struct ubuf_info *uarg = m->msg_control;
-			uarg->callback(uarg, false);
-		}
-	}
 
 	if (err)
 		goto err_kfree;
@@ -776,7 +772,11 @@ static ssize_t macvtap_get_user(struct macvtap_queue *q, struct msghdr *m,
 		skb_shinfo(skb)->destructor_arg = m->msg_control;
 		skb_shinfo(skb)->tx_flags |= SKBTX_DEV_ZEROCOPY;
 		skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+	} else if (m && m->msg_control) {
+		struct ubuf_info *uarg = m->msg_control;
+		uarg->callback(uarg, false);
 	}
+
 	if (vlan) {
 		skb->dev = vlan->dev;
 		dev_queue_xmit(skb);
@@ -824,9 +824,8 @@ static ssize_t macvtap_put_user(struct macvtap_queue *q,
 		if (iov_iter_count(iter) < vnet_hdr_len)
 			return -EINVAL;
 
-		ret = virtio_net_hdr_from_skb(skb, &vnet_hdr,
-					      macvtap_is_little_endian(q));
-		if (ret)
+		if (virtio_net_hdr_from_skb(skb, &vnet_hdr,
+					    macvtap_is_little_endian(q)))
 			BUG();
 
 		if (copy_to_iter(&vnet_hdr, sizeof(vnet_hdr), iter) !=

@@ -847,8 +847,6 @@ static int ath6kl_cfg80211_disconnect(struct wiphy *wiphy,
 
 	up(&ar->sem);
 
-	vif->sme_state = SME_DISCONNECTED;
-
 	return 0;
 }
 
@@ -1111,7 +1109,8 @@ void ath6kl_cfg80211_ch_switch_notify(struct ath6kl_vif *vif, int freq,
 
 	cfg80211_chandef_create(&chandef,
 				ieee80211_get_channel(vif->ar->wiphy, freq),
-				(mode == WMI_11G_HT20) ?
+				(mode == WMI_11G_HT20 &&
+				 ath6kl_band_2ghz.ht_cap.ht_supported) ?
 					NL80211_CHAN_HT20 : NL80211_CHAN_NO_HT);
 
 	mutex_lock(&vif->wdev.mtx);
@@ -1450,14 +1449,14 @@ static int ath6kl_cfg80211_get_txpower(struct wiphy *wiphy,
 		return -EIO;
 
 	if (test_bit(CONNECTED, &vif->flags)) {
-		ar->tx_pwr = 0;
+		ar->tx_pwr = 255;
 
 		if (ath6kl_wmi_get_tx_pwr_cmd(ar->wmi, vif->fw_vif_idx) != 0) {
 			ath6kl_err("ath6kl_wmi_get_tx_pwr_cmd failed\n");
 			return -EIO;
 		}
 
-		wait_event_interruptible_timeout(ar->event_wq, ar->tx_pwr != 0,
+		wait_event_interruptible_timeout(ar->event_wq, ar->tx_pwr != 255,
 						 5 * HZ);
 
 		if (signal_pending(current)) {
@@ -2978,6 +2977,7 @@ static int ath6kl_stop_ap(struct wiphy *wiphy, struct net_device *dev)
 
 	ath6kl_wmi_disconnect_cmd(ar->wmi, vif->fw_vif_idx);
 	clear_bit(CONNECTED, &vif->flags);
+	netif_carrier_off(vif->ndev);
 
 	/* Restore ht setting in firmware */
 	return ath6kl_restore_htcap(vif);

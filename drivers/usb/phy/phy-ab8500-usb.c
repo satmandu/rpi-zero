@@ -1036,25 +1036,6 @@ static unsigned ab8500_eyediagram_workaroud(struct ab8500_usb *ab, unsigned mA)
 	return mA;
 }
 
-static int ab8500_usb_set_power(struct usb_phy *phy, unsigned mA)
-{
-	struct ab8500_usb *ab;
-
-	if (!phy)
-		return -ENODEV;
-
-	ab = phy_to_ab(phy);
-
-	mA = ab8500_eyediagram_workaroud(ab, mA);
-
-	ab->vbus_draw = mA;
-
-	atomic_notifier_call_chain(&ab->phy.notifier,
-			UX500_MUSB_VBUS, &ab->vbus_draw);
-
-	return 0;
-}
-
 static int ab8500_usb_set_suspend(struct usb_phy *x, int suspend)
 {
 	/* TODO */
@@ -1248,7 +1229,7 @@ static void ab8500_usb_set_ab8500_tuning_values(struct ab8500_usb *ab)
 	err = abx500_set_register_interruptible(ab->dev,
 			AB8500_DEBUG, AB8500_USB_PHY_TUNE3, 0x78);
 	if (err < 0)
-		dev_err(ab->dev, "Failed to set PHY_TUNE3 regester err=%d\n",
+		dev_err(ab->dev, "Failed to set PHY_TUNE3 register err=%d\n",
 				err);
 
 	/* Switch to normal mode/disable Bank 0x12 access */
@@ -1290,7 +1271,7 @@ static void ab8500_usb_set_ab8505_tuning_values(struct ab8500_usb *ab)
 			0xFC, 0x80);
 
 	if (err < 0)
-		dev_err(ab->dev, "Failed to set PHY_TUNE3 regester err=%d\n",
+		dev_err(ab->dev, "Failed to set PHY_TUNE3 register err=%d\n",
 				err);
 
 	/* Switch to normal mode/disable Bank 0x12 access */
@@ -1321,7 +1302,7 @@ static void ab8500_usb_set_ab8540_tuning_values(struct ab8500_usb *ab)
 	err = abx500_set_register_interruptible(ab->dev,
 			AB8540_DEBUG, AB8500_USB_PHY_TUNE3, 0x90);
 	if (err < 0)
-		dev_err(ab->dev, "Failed to set PHY_TUNE3 regester ret=%d\n",
+		dev_err(ab->dev, "Failed to set PHY_TUNE3 register ret=%d\n",
 				err);
 }
 
@@ -1351,7 +1332,7 @@ static void ab8500_usb_set_ab9540_tuning_values(struct ab8500_usb *ab)
 	err = abx500_set_register_interruptible(ab->dev,
 			AB8500_DEBUG, AB8500_USB_PHY_TUNE3, 0x80);
 	if (err < 0)
-		dev_err(ab->dev, "Failed to set PHY_TUNE3 regester err=%d\n",
+		dev_err(ab->dev, "Failed to set PHY_TUNE3 register err=%d\n",
 				err);
 
 	/* Switch to normal mode/disable Bank 0x12 access */
@@ -1392,7 +1373,6 @@ static int ab8500_usb_probe(struct platform_device *pdev)
 	ab->phy.otg		= otg;
 	ab->phy.label		= "ab8500";
 	ab->phy.set_suspend	= ab8500_usb_set_suspend;
-	ab->phy.set_power	= ab8500_usb_set_power;
 	ab->phy.otg->state	= OTG_STATE_UNDEFINED;
 
 	otg->usb_phy		= &ab->phy;

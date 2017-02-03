@@ -11,8 +11,8 @@
 
 #include <linux/errno.h>
 #include <linux/err.h>
+#include <linux/highmem.h>
 #include <linux/kvm_host.h>
-#include <linux/module.h>
 #include <linux/vmalloc.h>
 #include <linux/fs.h>
 #include <linux/bootmem.h>
@@ -29,19 +29,23 @@
 static int kvm_mips_trans_replace(struct kvm_vcpu *vcpu, u32 *opc,
 				  union mips_instruction replace)
 {
-	unsigned long kseg0_opc, flags;
+	unsigned long paddr, flags;
+	void *vaddr;
 
-	if (KVM_GUEST_KSEGX(opc) == KVM_GUEST_KSEG0) {
-		kseg0_opc =
-		    CKSEG0ADDR(kvm_mips_translate_guest_kseg0_to_hpa
-			       (vcpu, (unsigned long) opc));
-		memcpy((void *)kseg0_opc, (void *)&replace, sizeof(u32));
-		local_flush_icache_range(kseg0_opc, kseg0_opc + 32);
+	if (KVM_GUEST_KSEGX((unsigned long)opc) == KVM_GUEST_KSEG0) {
+		paddr = kvm_mips_translate_guest_kseg0_to_hpa(vcpu,
+							    (unsigned long)opc);
+		vaddr = kmap_atomic(pfn_to_page(PHYS_PFN(paddr)));
+		vaddr += paddr & ~PAGE_MASK;
+		memcpy(vaddr, (void *)&replace, sizeof(u32));
+		local_flush_icache_range((unsigned long)vaddr,
+					 (unsigned long)vaddr + 32);
+		kunmap_atomic(vaddr);
 	} else if (KVM_GUEST_KSEGX((unsigned long) opc) == KVM_GUEST_KSEG23) {
 		local_irq_save(flags);
 		memcpy((void *)opc, (void *)&replace, sizeof(u32));
-		local_flush_icache_range((unsigned long)opc,
-					 (unsigned long)opc + 32);
+		__local_flush_icache_user_range((unsigned long)opc,
+						(unsigned long)opc + 32);
 		local_irq_restore(flags);
 	} else {
 		kvm_err("%s: Invalid address: %p\n", __func__, opc);
@@ -98,6 +102,10 @@ int kvm_mips_trans_mfc0(union mips_instruction inst, u32 *opc,
 		mfc0_inst.i_format.rt = inst.c0r_format.rt;
 		mfc0_inst.i_format.simmediate = KVM_GUEST_COMMPAGE_ADDR |
 			offsetof(struct kvm_mips_commpage, cop0.reg[rd][sel]);
+#ifdef CONFIG_CPU_BIG_ENDIAN
+		if (sizeof(vcpu->arch.cop0->reg[0][0]) == 8)
+			mfc0_inst.i_format.simmediate |= 4;
+#endif
 	}
 
 	return kvm_mips_trans_replace(vcpu, opc, mfc0_inst);
@@ -116,6 +124,10 @@ int kvm_mips_trans_mtc0(union mips_instruction inst, u32 *opc,
 	mtc0_inst.i_format.rt = inst.c0r_format.rt;
 	mtc0_inst.i_format.simmediate = KVM_GUEST_COMMPAGE_ADDR |
 		offsetof(struct kvm_mips_commpage, cop0.reg[rd][sel]);
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	if (sizeof(vcpu->arch.cop0->reg[0][0]) == 8)
+		mtc0_inst.i_format.simmediate |= 4;
+#endif
 
 	return kvm_mips_trans_replace(vcpu, opc, mtc0_inst);
 }

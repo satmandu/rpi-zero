@@ -218,7 +218,7 @@ static enum tmc_mem_intf_width tmc_get_memwidth(u32 devid)
 }
 
 #define coresight_tmc_simple_func(name, offset)			\
-	coresight_simple_func(struct tmc_drvdata, name, offset)
+	coresight_simple_func(struct tmc_drvdata, NULL, name, offset)
 
 coresight_tmc_simple_func(rsz, TMC_RSZ);
 coresight_tmc_simple_func(sts, TMC_STS);
@@ -247,8 +247,8 @@ static struct attribute *coresight_tmc_mgmt_attrs[] = {
 	NULL,
 };
 
-ssize_t trigger_cntr_show(struct device *dev,
-			  struct device_attribute *attr, char *buf)
+static ssize_t trigger_cntr_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
 	struct tmc_drvdata *drvdata = dev_get_drvdata(dev->parent);
 	unsigned long val = drvdata->trigger_cntr;

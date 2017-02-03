@@ -29,10 +29,11 @@ enum {
  * Checks if a given pointer and length is contained by the current
  * stack frame (if possible).
  *
- *	0: not at all on the stack
- *	1: fully within a valid stack frame
- *	2: fully on the stack (when can't do frame-checking)
- *	-1: error condition (invalid stack position or bad stack frame)
+ * Returns:
+ *	NOT_STACK: not at all on the stack
+ *	GOOD_FRAME: fully within a valid stack frame
+ *	GOOD_STACK: fully on the stack (when can't do frame-checking)
+ *	BAD_STACK: error condition (invalid stack position or bad stack frame)
  */
 static noinline int check_stack_object(const void *obj, unsigned long len)
 {
@@ -82,7 +83,7 @@ static bool overlaps(const void *ptr, unsigned long n, unsigned long low,
 	unsigned long check_high = check_low + n;
 
 	/* Does not overlap if entirely above or entirely below. */
-	if (check_low >= high || check_high < low)
+	if (check_low >= high || check_high <= low)
 		return false;
 
 	return true;
@@ -94,16 +95,28 @@ static inline const char *check_kernel_text_object(const void *ptr,
 {
 	unsigned long textlow = (unsigned long)_stext;
 	unsigned long texthigh = (unsigned long)_etext;
+	unsigned long textlow_linear, texthigh_linear;
 
 	if (overlaps(ptr, n, textlow, texthigh))
 		return "<kernel text>";
 
-#ifdef HAVE_ARCH_LINEAR_KERNEL_MAPPING
-	/* Check against linear mapping as well. */
-	if (overlaps(ptr, n, (unsigned long)__va(__pa(textlow)),
-		     (unsigned long)__va(__pa(texthigh))))
+	/*
+	 * Some architectures have virtual memory mappings with a secondary
+	 * mapping of the kernel text, i.e. there is more than one virtual
+	 * kernel address that points to the kernel image. It is usually
+	 * when there is a separate linear physical memory mapping, in that
+	 * __pa() is not just the reverse of __va(). This can be detected
+	 * and checked:
+	 */
+	textlow_linear = (unsigned long)__va(__pa(textlow));
+	/* No different mapping: we're done. */
+	if (textlow_linear == textlow)
+		return NULL;
+
+	/* Check the secondary mapping... */
+	texthigh_linear = (unsigned long)__va(__pa(texthigh));
+	if (overlaps(ptr, n, textlow_linear, texthigh_linear))
 		return "<linear kernel text>";
-#endif
 
 	return NULL;
 }
@@ -111,7 +124,7 @@ static inline const char *check_kernel_text_object(const void *ptr,
 static inline const char *check_bogus_address(const void *ptr, unsigned long n)
 {
 	/* Reject if object wraps past end of memory. */
-	if (ptr + n < ptr)
+	if ((unsigned long)ptr + n < (unsigned long)ptr)
 		return "<wrapped address>";
 
 	/* Reject if NULL or ZERO-allocation. */
@@ -121,20 +134,14 @@ static inline const char *check_bogus_address(const void *ptr, unsigned long n)
 	return NULL;
 }
 
-static inline const char *check_heap_object(const void *ptr, unsigned long n,
-					    bool to_user)
+/* Checks for allocs that are marked in some way as spanning multiple pages. */
+static inline const char *check_page_span(const void *ptr, unsigned long n,
+					  struct page *page, bool to_user)
 {
-	struct page *page, *endpage;
+#ifdef CONFIG_HARDENED_USERCOPY_PAGESPAN
 	const void *end = ptr + n - 1;
-
-	if (!virt_addr_valid(ptr))
-		return NULL;
-
-	page = virt_to_head_page(ptr);
-
-	/* Check slab allocator for flags and size. */
-	if (PageSlab(page))
-		return __check_heap_object(ptr, n, page);
+	struct page *endpage;
+	bool is_reserved, is_cma;
 
 	/*
 	 * Sometimes the kernel data regions are not marked Reserved (see
@@ -164,27 +171,66 @@ static inline const char *check_heap_object(const void *ptr, unsigned long n,
 		   ((unsigned long)end & (unsigned long)PAGE_MASK)))
 		return NULL;
 
-	/* Allow if start and end are inside the same compound page. */
+	/* Allow if fully inside the same compound (__GFP_COMP) page. */
 	endpage = virt_to_head_page(end);
 	if (likely(endpage == page))
 		return NULL;
 
 	/*
-	 * Reject if range is not Reserved (i.e. special or device memory),
-	 * since then the object spans several independently allocated pages.
+	 * Reject if range is entirely either Reserved (i.e. special or
+	 * device memory), or CMA. Otherwise, reject since the object spans
+	 * several independently allocated pages.
 	 */
-	for (; ptr <= end ; ptr += PAGE_SIZE, page = virt_to_head_page(ptr)) {
-		if (!PageReserved(page))
-			return "<spans multiple pages>";
+	is_reserved = PageReserved(page);
+	is_cma = is_migrate_cma_page(page);
+	if (!is_reserved && !is_cma)
+		return "<spans multiple pages>";
+
+	for (ptr += PAGE_SIZE; ptr <= end; ptr += PAGE_SIZE) {
+		page = virt_to_head_page(ptr);
+		if (is_reserved && !PageReserved(page))
+			return "<spans Reserved and non-Reserved pages>";
+		if (is_cma && !is_migrate_cma_page(page))
+			return "<spans CMA and non-CMA pages>";
 	}
+#endif
 
 	return NULL;
 }
 
+static inline const char *check_heap_object(const void *ptr, unsigned long n,
+					    bool to_user)
+{
+	struct page *page;
+
+	/*
+	 * Some architectures (arm64) return true for virt_addr_valid() on
+	 * vmalloced addresses. Work around this by checking for vmalloc
+	 * first.
+	 *
+	 * We also need to check for module addresses explicitly since we
+	 * may copy static data from modules to userspace
+	 */
+	if (is_vmalloc_or_module_addr(ptr))
+		return NULL;
+
+	if (!virt_addr_valid(ptr))
+		return NULL;
+
+	page = virt_to_head_page(ptr);
+
+	/* Check slab allocator for flags and size. */
+	if (PageSlab(page))
+		return __check_heap_object(ptr, n, page);
+
+	/* Verify object does not incorrectly span multiple pages. */
+	return check_page_span(ptr, n, page, to_user);
+}
+
 /*
- * Validates that the given object is one of:
- * - known safe heap object
- * - known safe stack object
+ * Validates that the given object is:
+ * - not bogus address
+ * - known-safe heap or stack object
  * - not in kernel text
  */
 void __check_object_size(const void *ptr, unsigned long n, bool to_user)

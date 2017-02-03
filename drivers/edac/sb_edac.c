@@ -23,10 +23,11 @@
 #include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <asm/cpu_device_id.h>
+#include <asm/intel-family.h>
 #include <asm/processor.h>
 #include <asm/mce.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 
 /* Static vars */
 static LIST_HEAD(sbridge_edac_list);
@@ -552,9 +553,9 @@ static const struct pci_id_table pci_dev_descr_haswell_table[] = {
 /* Knight's Landing Support */
 /*
  * KNL's memory channels are swizzled between memory controllers.
- * MC0 is mapped to CH3,5,6 and MC1 is mapped to CH0,1,2
+ * MC0 is mapped to CH3,4,5 and MC1 is mapped to CH0,1,2
  */
-#define knl_channel_remap(channel) ((channel + 3) % 6)
+#define knl_channel_remap(mc, chan) ((mc) ? (chan) : (chan) + 3)
 
 /* Memory controller, TAD tables, error injection - 2-8-0, 2-9-0 (2 of these) */
 #define PCI_DEVICE_ID_INTEL_KNL_IMC_MC       0x7840
@@ -1286,7 +1287,7 @@ static u32 knl_get_mc_route(int entry, u32 reg)
 	mc = GET_BITFIELD(reg, entry*3, (entry*3)+2);
 	chan = GET_BITFIELD(reg, (entry*2) + 18, (entry*2) + 18 + 1);
 
-	return knl_channel_remap(mc*3 + chan);
+	return knl_channel_remap(mc, chan);
 }
 
 /*
@@ -2474,7 +2475,7 @@ static int sbridge_mci_bind_devs(struct mem_ctl_info *mci,
 
 	/* Check if everything were registered */
 	if (!pvt->pci_sad0 || !pvt->pci_sad1 || !pvt->pci_ha0 ||
-	    !pvt-> pci_tad || !pvt->pci_ras  || !pvt->pci_ta)
+	    !pvt->pci_ras || !pvt->pci_ta)
 		goto enodev;
 
 	if (saw_chan_mask != 0x0f)
@@ -2563,8 +2564,7 @@ static int ibridge_mci_bind_devs(struct mem_ctl_info *mci,
 
 	/* Check if everything were registered */
 	if (!pvt->pci_sad0 || !pvt->pci_ha0 || !pvt->pci_br0 ||
-	    !pvt->pci_br1 || !pvt->pci_tad || !pvt->pci_ras  ||
-	    !pvt->pci_ta)
+	    !pvt->pci_br1 || !pvt->pci_ras || !pvt->pci_ta)
 		goto enodev;
 
 	if (saw_chan_mask != 0x0f && /* -EN */
@@ -2997,8 +2997,15 @@ static void sbridge_mce_output_error(struct mem_ctl_info *mci,
 		} else {
 			char A = *("A");
 
-			channel = knl_channel_remap(channel);
+			/*
+			 * Reported channel is in range 0-2, so we can't map it
+			 * back to mc. To figure out mc we check machine check
+			 * bank register that reported this error.
+			 * bank15 means mc0 and bank16 means mc1.
+			 */
+			channel = knl_channel_remap(m->bank == 16, channel);
 			channel_mask = 1 << channel;
+
 			snprintf(msg, sizeof(msg),
 				"%s%s err_code:%04x:%04x channel:%d (DIMM_%c)",
 				overflow ? " OVERFLOW" : "",
@@ -3359,12 +3366,13 @@ fail0:
 	{ X86_VENDOR_INTEL, 6, model, 0, (unsigned long)&table }
 
 static const struct x86_cpu_id sbridge_cpuids[] = {
-	ICPU(0x2d, pci_dev_descr_sbridge_table),	/* SANDY_BRIDGE */
-	ICPU(0x3e, pci_dev_descr_ibridge_table),	/* IVY_BRIDGE */
-	ICPU(0x3f, pci_dev_descr_haswell_table),	/* HASWELL */
-	ICPU(0x4f, pci_dev_descr_broadwell_table),	/* BROADWELL */
-	ICPU(0x56, pci_dev_descr_broadwell_table),	/* BROADWELL-DE */
-	ICPU(0x57, pci_dev_descr_knl_table),		/* KNIGHTS_LANDING */
+	ICPU(INTEL_FAM6_SANDYBRIDGE_X,	  pci_dev_descr_sbridge_table),
+	ICPU(INTEL_FAM6_IVYBRIDGE_X,	  pci_dev_descr_ibridge_table),
+	ICPU(INTEL_FAM6_HASWELL_X,	  pci_dev_descr_haswell_table),
+	ICPU(INTEL_FAM6_BROADWELL_X,	  pci_dev_descr_broadwell_table),
+	ICPU(INTEL_FAM6_BROADWELL_XEON_D, pci_dev_descr_broadwell_table),
+	ICPU(INTEL_FAM6_XEON_PHI_KNL,	  pci_dev_descr_knl_table),
+	ICPU(INTEL_FAM6_XEON_PHI_KNM,	  pci_dev_descr_knl_table),
 	{ }
 };
 MODULE_DEVICE_TABLE(x86cpu, sbridge_cpuids);

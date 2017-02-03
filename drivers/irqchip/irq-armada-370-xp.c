@@ -344,7 +344,6 @@ static void armada_mpic_send_doorbell(const struct cpumask *mask,
 	writel((map << 8) | irq, main_int_base +
 		ARMADA_370_XP_SW_TRIG_INT_OFFS);
 }
-#endif
 
 static int armada_xp_mpic_starting_cpu(unsigned int cpu)
 {
@@ -359,6 +358,7 @@ static int mpic_cascaded_starting_cpu(unsigned int cpu)
 	enable_percpu_irq(parent_irq, IRQ_TYPE_NONE);
 	return 0;
 }
+#endif
 
 static const struct irq_domain_ops armada_370_xp_mpic_irq_ops = {
 	.map = armada_370_xp_mpic_irq_map,
@@ -578,13 +578,13 @@ static int __init armada_370_xp_mpic_of_init(struct device_node *node,
 #ifdef CONFIG_SMP
 		set_smp_cross_call(armada_mpic_send_doorbell);
 		cpuhp_setup_state_nocalls(CPUHP_AP_IRQ_ARMADA_XP_STARTING,
-					  "AP_IRQ_ARMADA_XP_STARTING",
+					  "irqchip/armada/ipi:starting",
 					  armada_xp_mpic_starting_cpu, NULL);
 #endif
 	} else {
 #ifdef CONFIG_SMP
-		cpuhp_setup_state_nocalls(CPUHP_AP_IRQ_ARMADA_CASC_STARTING,
-					  "AP_IRQ_ARMADA_CASC_STARTING",
+		cpuhp_setup_state_nocalls(CPUHP_AP_IRQ_ARMADA_XP_STARTING,
+					  "irqchip/armada/cascade:starting",
 					  mpic_cascaded_starting_cpu, NULL);
 #endif
 		irq_set_chained_handler(parent_irq,

@@ -104,7 +104,7 @@ TRACE_EVENT(amdgpu_cs_ioctl,
 			     __field(struct amdgpu_device *, adev)
 			     __field(struct amd_sched_job *, sched_job)
 			     __field(struct amdgpu_ib *, ib)
-			     __field(struct fence *, fence)
+			     __field(struct dma_fence *, fence)
 			     __field(char *, ring_name)
 			     __field(u32, num_ibs)
 			     ),
@@ -129,7 +129,7 @@ TRACE_EVENT(amdgpu_sched_run_job,
 			     __field(struct amdgpu_device *, adev)
 			     __field(struct amd_sched_job *, sched_job)
 			     __field(struct amdgpu_ib *, ib)
-			     __field(struct fence *, fence)
+			     __field(struct dma_fence *, fence)
 			     __field(char *, ring_name)
 			     __field(u32, num_ibs)
 			     ),
@@ -149,24 +149,26 @@ TRACE_EVENT(amdgpu_sched_run_job,
 
 
 TRACE_EVENT(amdgpu_vm_grab_id,
-	    TP_PROTO(struct amdgpu_vm *vm, int ring, unsigned vmid,
-		     uint64_t pd_addr),
-	    TP_ARGS(vm, ring, vmid, pd_addr),
+	    TP_PROTO(struct amdgpu_vm *vm, int ring, struct amdgpu_job *job),
+	    TP_ARGS(vm, ring, job),
 	    TP_STRUCT__entry(
 			     __field(struct amdgpu_vm *, vm)
 			     __field(u32, ring)
 			     __field(u32, vmid)
 			     __field(u64, pd_addr)
+			     __field(u32, needs_flush)
 			     ),
 
 	    TP_fast_assign(
 			   __entry->vm = vm;
 			   __entry->ring = ring;
-			   __entry->vmid = vmid;
-			   __entry->pd_addr = pd_addr;
+			   __entry->vmid = job->vm_id;
+			   __entry->pd_addr = job->vm_pd_addr;
+			   __entry->needs_flush = job->vm_needs_flush;
 			   ),
-	    TP_printk("vm=%p, ring=%u, id=%u, pd_addr=%010Lx", __entry->vm,
-		      __entry->ring, __entry->vmid, __entry->pd_addr)
+	    TP_printk("vm=%p, ring=%u, id=%u, pd_addr=%010Lx needs_flush=%u",
+		      __entry->vm, __entry->ring, __entry->vmid,
+		      __entry->pd_addr, __entry->needs_flush)
 );
 
 TRACE_EVENT(amdgpu_vm_bo_map,
@@ -245,7 +247,7 @@ DEFINE_EVENT(amdgpu_vm_mapping, amdgpu_vm_bo_mapping,
 	    TP_ARGS(mapping)
 );
 
-TRACE_EVENT(amdgpu_vm_set_page,
+TRACE_EVENT(amdgpu_vm_set_ptes,
 	    TP_PROTO(uint64_t pe, uint64_t addr, unsigned count,
 		     uint32_t incr, uint32_t flags),
 	    TP_ARGS(pe, addr, count, incr, flags),
@@ -267,6 +269,24 @@ TRACE_EVENT(amdgpu_vm_set_page,
 	    TP_printk("pe=%010Lx, addr=%010Lx, incr=%u, flags=%08x, count=%u",
 		      __entry->pe, __entry->addr, __entry->incr,
 		      __entry->flags, __entry->count)
+);
+
+TRACE_EVENT(amdgpu_vm_copy_ptes,
+	    TP_PROTO(uint64_t pe, uint64_t src, unsigned count),
+	    TP_ARGS(pe, src, count),
+	    TP_STRUCT__entry(
+			     __field(u64, pe)
+			     __field(u64, src)
+			     __field(u32, count)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->pe = pe;
+			   __entry->src = src;
+			   __entry->count = count;
+			   ),
+	    TP_printk("pe=%010Lx, src=%010Lx, count=%u",
+		      __entry->pe, __entry->src, __entry->count)
 );
 
 TRACE_EVENT(amdgpu_vm_flush,

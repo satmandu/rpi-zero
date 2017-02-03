@@ -645,16 +645,6 @@ static int octeon_mgmt_change_mtu(struct net_device *netdev, int new_mtu)
 	struct octeon_mgmt *p = netdev_priv(netdev);
 	int size_without_fcs = new_mtu + OCTEON_MGMT_RX_HEADROOM;
 
-	/* Limit the MTU to make sure the ethernet packets are between
-	 * 64 bytes and 16383 bytes.
-	 */
-	if (size_without_fcs < 64 || size_without_fcs > 16383) {
-		dev_warn(p->dev, "MTU must be between %d and %d.\n",
-			 64 - OCTEON_MGMT_RX_HEADROOM,
-			 16383 - OCTEON_MGMT_RX_HEADROOM);
-		return -EINVAL;
-	}
-
 	netdev->mtu = new_mtu;
 
 	cvmx_write_csr(p->agl + AGL_GMX_RX_FRM_MAX, size_without_fcs);
@@ -1479,6 +1469,12 @@ static int octeon_mgmt_probe(struct platform_device *pdev)
 	p->agl = (u64)devm_ioremap(&pdev->dev, p->agl_phys, p->agl_size);
 	p->agl_prt_ctl = (u64)devm_ioremap(&pdev->dev, p->agl_prt_ctl_phys,
 					   p->agl_prt_ctl_size);
+	if (!p->mix || !p->agl || !p->agl_prt_ctl) {
+		dev_err(&pdev->dev, "failed to map I/O memory\n");
+		result = -ENOMEM;
+		goto err;
+	}
+
 	spin_lock_init(&p->lock);
 
 	skb_queue_head_init(&p->tx_list);
@@ -1490,6 +1486,9 @@ static int octeon_mgmt_probe(struct platform_device *pdev)
 
 	netdev->netdev_ops = &octeon_mgmt_ops;
 	netdev->ethtool_ops = &octeon_mgmt_ethtool_ops;
+
+	netdev->min_mtu = 64 - OCTEON_MGMT_RX_HEADROOM;
+	netdev->max_mtu = 16383 - OCTEON_MGMT_RX_HEADROOM;
 
 	mac = of_get_mac_address(pdev->dev.of_node);
 
@@ -1513,6 +1512,7 @@ static int octeon_mgmt_probe(struct platform_device *pdev)
 	return 0;
 
 err:
+	of_node_put(p->phy_np);
 	free_netdev(netdev);
 	return result;
 }
@@ -1520,8 +1520,10 @@ err:
 static int octeon_mgmt_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
+	struct octeon_mgmt *p = netdev_priv(netdev);
 
 	unregister_netdev(netdev);
+	of_node_put(p->phy_np);
 	free_netdev(netdev);
 	return 0;
 }

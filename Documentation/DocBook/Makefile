@@ -6,20 +6,28 @@
 # To add a new book the only step required is to add the book to the
 # list of DOCBOOKS.
 
-ifeq ($(IGNORE_DOCBOOKS),)
-
-DOCBOOKS := z8530book.xml device-drivers.xml \
+DOCBOOKS := z8530book.xml  \
 	    kernel-hacking.xml kernel-locking.xml deviceiobook.xml \
 	    writing_usb_driver.xml networking.xml \
-	    kernel-api.xml filesystems.xml lsm.xml usb.xml kgdb.xml \
+	    kernel-api.xml filesystems.xml lsm.xml kgdb.xml \
 	    gadget.xml libata.xml mtdnand.xml librs.xml rapidio.xml \
 	    genericirq.xml s390-drivers.xml uio-howto.xml scsi.xml \
-	    80211.xml debugobjects.xml sh.xml regulator.xml \
-	    alsa-driver-api.xml writing-an-alsa-driver.xml \
-	    tracepoint.xml media_api.xml w1.xml \
-	    writing_musb_glue_layer.xml crypto-API.xml iio.xml
+	    sh.xml regulator.xml w1.xml \
+	    writing_musb_glue_layer.xml iio.xml
 
-include Documentation/DocBook/media/Makefile
+ifeq ($(DOCBOOKS),)
+
+# Skip DocBook build if the user explicitly requested no DOCBOOKS.
+.DEFAULT:
+	@echo "  SKIP    DocBook $@ target (DOCBOOKS=\"\" specified)."
+else
+ifneq ($(SPHINXDIRS),)
+
+# Skip DocBook build if the user explicitly requested a sphinx dir
+.DEFAULT:
+	@echo "  SKIP    DocBook $@ target (SPHINXDIRS specified)."
+else
+
 
 ###
 # The build process is as follows (targets):
@@ -49,7 +57,6 @@ pdfdocs: $(PDF)
 HTML := $(sort $(patsubst %.xml, %.html, $(BOOKS)))
 htmldocs: $(HTML)
 	$(call cmd,build_main_index)
-	$(call install_media_images)
 
 MAN := $(patsubst %.xml, %.9, $(BOOKS))
 mandocs: $(MAN)
@@ -63,6 +70,7 @@ installmandocs: mandocs
 
 # no-op for the DocBook toolchain
 epubdocs:
+latexdocs:
 
 ###
 #External programs used
@@ -217,19 +225,8 @@ silent_gen_xml = :
 	       -e "s/>/\\&gt;/g";     \
 	   echo "</programlisting>")  > $@
 
-else
-
-# Needed, due to cleanmediadocs
-include Documentation/DocBook/media/Makefile
-
-htmldocs:
-pdfdocs:
-psdocs:
-xmldocs:
-installmandocs:
-
-endif # IGNORE_DOCBOOKS
-
+endif # DOCBOOKS=""
+endif # SPHINDIR=...
 
 ###
 # Help targets as used by the top-level makefile
@@ -246,7 +243,7 @@ dochelp:
 	@echo  '  make DOCBOOKS="s1.xml s2.xml" [target] Generate only docs s1.xml s2.xml'
 	@echo  '  valid values for DOCBOOKS are: $(DOCBOOKS)'
 	@echo
-	@echo  "  make IGNORE_DOCBOOKS=1 [target] Don't generate docs from Docbook"
+	@echo  "  make DOCBOOKS=\"\" [target] Don't generate docs from Docbook"
 	@echo  '     This is useful to generate only the ReST docs (Sphinx)'
 
 
@@ -265,11 +262,12 @@ clean-files := $(DOCBOOKS) \
 	$(patsubst %.xml, %.aux.xml, $(DOCBOOKS)) \
 	$(patsubst %.xml, %.xml.db,  $(DOCBOOKS)) \
 	$(patsubst %.xml, %.xml,     $(DOCBOOKS)) \
+	$(patsubst %.xml, .%.xml.cmd, $(DOCBOOKS)) \
 	$(index)
 
 clean-dirs := $(patsubst %.xml,%,$(DOCBOOKS)) man
 
-cleandocs: cleanmediadocs
+cleandocs:
 	$(Q)rm -f $(call objectify, $(clean-files))
 	$(Q)rm -rf $(call objectify, $(clean-dirs))
 

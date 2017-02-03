@@ -23,6 +23,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/kvm_host.h>
 #include <linux/suspend.h>
+#include <asm/cpufeature.h>
 #include <asm/thread_info.h>
 #include <asm/memory.h>
 #include <asm/smp_plat.h>
@@ -35,11 +36,13 @@ int main(void)
 {
   DEFINE(TSK_ACTIVE_MM,		offsetof(struct task_struct, active_mm));
   BLANK();
-  DEFINE(TI_FLAGS,		offsetof(struct thread_info, flags));
-  DEFINE(TI_PREEMPT,		offsetof(struct thread_info, preempt_count));
-  DEFINE(TI_ADDR_LIMIT,		offsetof(struct thread_info, addr_limit));
-  DEFINE(TI_TASK,		offsetof(struct thread_info, task));
-  DEFINE(TI_CPU,		offsetof(struct thread_info, cpu));
+  DEFINE(TSK_TI_FLAGS,		offsetof(struct task_struct, thread_info.flags));
+  DEFINE(TSK_TI_PREEMPT,	offsetof(struct task_struct, thread_info.preempt_count));
+  DEFINE(TSK_TI_ADDR_LIMIT,	offsetof(struct task_struct, thread_info.addr_limit));
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+  DEFINE(TSK_TI_TTBR0,		offsetof(struct task_struct, thread_info.ttbr0));
+#endif
+  DEFINE(TSK_STACK,		offsetof(struct task_struct, stack));
   BLANK();
   DEFINE(THREAD_CPU_CONTEXT,	offsetof(struct task_struct, thread.cpu_context));
   BLANK();
@@ -51,6 +54,17 @@ int main(void)
   DEFINE(S_X5,			offsetof(struct pt_regs, regs[5]));
   DEFINE(S_X6,			offsetof(struct pt_regs, regs[6]));
   DEFINE(S_X7,			offsetof(struct pt_regs, regs[7]));
+  DEFINE(S_X8,			offsetof(struct pt_regs, regs[8]));
+  DEFINE(S_X10,			offsetof(struct pt_regs, regs[10]));
+  DEFINE(S_X12,			offsetof(struct pt_regs, regs[12]));
+  DEFINE(S_X14,			offsetof(struct pt_regs, regs[14]));
+  DEFINE(S_X16,			offsetof(struct pt_regs, regs[16]));
+  DEFINE(S_X18,			offsetof(struct pt_regs, regs[18]));
+  DEFINE(S_X20,			offsetof(struct pt_regs, regs[20]));
+  DEFINE(S_X22,			offsetof(struct pt_regs, regs[22]));
+  DEFINE(S_X24,			offsetof(struct pt_regs, regs[24]));
+  DEFINE(S_X26,			offsetof(struct pt_regs, regs[26]));
+  DEFINE(S_X28,			offsetof(struct pt_regs, regs[28]));
   DEFINE(S_LR,			offsetof(struct pt_regs, regs[30]));
   DEFINE(S_SP,			offsetof(struct pt_regs, sp));
 #ifdef CONFIG_COMPAT
@@ -111,6 +125,7 @@ int main(void)
   DEFINE(TZ_DSTTIME,		offsetof(struct timezone, tz_dsttime));
   BLANK();
   DEFINE(CPU_BOOT_STACK,	offsetof(struct secondary_data, stack));
+  DEFINE(CPU_BOOT_TASK,		offsetof(struct secondary_data, task));
   BLANK();
 #ifdef CONFIG_KVM_ARM_HOST
   DEFINE(VCPU_CONTEXT,		offsetof(struct kvm_vcpu, arch.ctxt));
@@ -134,5 +149,6 @@ int main(void)
   DEFINE(HIBERN_PBE_ORIG,	offsetof(struct pbe, orig_address));
   DEFINE(HIBERN_PBE_ADDR,	offsetof(struct pbe, address));
   DEFINE(HIBERN_PBE_NEXT,	offsetof(struct pbe, next));
+  DEFINE(ARM64_FTR_SYSVAL,	offsetof(struct arm64_ftr_reg, sys_val));
   return 0;
 }

@@ -53,9 +53,12 @@ u32 driver_features;
 DRIVER_USE_AGP
     Driver uses AGP interface, the DRM core will manage AGP resources.
 
-DRIVER_REQUIRE_AGP
-    Driver needs AGP interface to function. AGP initialization failure
-    will become a fatal error.
+DRIVER_LEGACY
+    Denote a legacy driver using shadow attach. Don't use.
+
+DRIVER_KMS_LEGACY_CONTEXT
+    Used only by nouveau for backwards compatibility with existing userspace.
+    Don't use.
 
 DRIVER_PCI_DMA
     Driver is capable of PCI DMA, mapping of PCI DMA buffers to
@@ -140,6 +143,9 @@ Device Instance and Driver Handling
 .. kernel-doc:: drivers/gpu/drm/drm_drv.c
    :export:
 
+.. kernel-doc:: include/drm/drm_drv.h
+   :internal:
+
 Driver Load
 -----------
 
@@ -188,7 +194,8 @@ Manual IRQ Registration
 Drivers that require multiple interrupt handlers can't use the managed
 IRQ registration functions. In that case IRQs must be registered and
 unregistered manually (usually with the :c:func:`request_irq()` and
-:c:func:`free_irq()` functions, or their devm_\* equivalent).
+:c:func:`free_irq()` functions, or their :c:func:`devm_request_irq()` and
+:c:func:`devm_free_irq()` equivalents).
 
 When manually registering IRQs, drivers must not set the
 DRIVER_HAVE_IRQ driver feature flag, and must not provide the
@@ -242,11 +249,13 @@ Open/Close, File Operations and IOCTLs
 Open and Close
 --------------
 
-int (\*firstopen) (struct drm_device \*); void (\*lastclose) (struct
-drm_device \*); int (\*open) (struct drm_device \*, struct drm_file
-\*); void (\*preclose) (struct drm_device \*, struct drm_file \*);
-void (\*postclose) (struct drm_device \*, struct drm_file \*);
-    Open and close handlers. None of those methods are mandatory.
+Open and close handlers. None of those methods are mandatory::
+
+    int (*firstopen) (struct drm_device *);
+    void (*lastclose) (struct drm_device *);
+    int (*open) (struct drm_device *, struct drm_file *);
+    void (*preclose) (struct drm_device *, struct drm_file *);
+    void (*postclose) (struct drm_device *, struct drm_file *);
 
 The firstopen method is called by the DRM core for legacy UMS (User Mode
 Setting) drivers only when an application opens a device that has no
@@ -343,6 +352,23 @@ how the ioctl is allowed to be called.
 
 .. kernel-doc:: drivers/gpu/drm/drm_ioctl.c
    :export:
+
+
+Misc Utilities
+==============
+
+Printer
+-------
+
+.. kernel-doc:: include/drm/drm_print.h
+   :doc: print
+
+.. kernel-doc:: include/drm/drm_print.h
+   :internal:
+
+.. kernel-doc:: drivers/gpu/drm/drm_print.c
+   :export:
+
 
 Legacy Support Code
 ===================

@@ -44,18 +44,6 @@
 				PSSCR_PSLL_MASK | PSSCR_TR_MASK | \
 				PSSCR_MTL_MASK
 
-/* Idle state entry routines */
-
-#define	IDLE_STATE_ENTER_SEQ(IDLE_INST)				\
-	/* Magic NAP/SLEEP/WINKLE mode enter sequence */	\
-	std	r0,0(r1);					\
-	ptesync;						\
-	ld	r0,0(r1);					\
-1:	cmp	cr0,r0,r0;					\
-	bne	1b;						\
-	IDLE_INST;						\
-	b	.
-
 	.text
 
 /*
@@ -102,6 +90,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_ARCH_300)
  * Threads will spin in HMT_LOW until the lock bit is cleared.
  * r14 - pointer to core_idle_state
  * r15 - used to load contents of core_idle_state
+ * r9  - used as a temporary variable
  */
 
 core_idle_lock_held:
@@ -111,6 +100,8 @@ core_idle_lock_held:
 	bne	3b
 	HMT_MEDIUM
 	lwarx	r15,0,r14
+	andi.	r9,r15,PNV_CORE_IDLE_LOCK_BIT
+	bne	core_idle_lock_held
 	blr
 
 /*
@@ -175,12 +166,6 @@ _GLOBAL(pnv_powersave_common)
 	std	r9,_MSR(r1)
 	std	r1,PACAR1(r13)
 
-#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
-	/* Tell KVM we're entering idle */
-	li	r4,KVM_HWTHREAD_IN_IDLE
-	stb	r4,HSTATE_HWTHREAD_STATE(r13)
-#endif
-
 	/*
 	 * Go to real mode to do the nap, as required by the architecture.
 	 * Also, we need to be in real mode before setting hwthread_state,
@@ -197,6 +182,26 @@ _GLOBAL(pnv_powersave_common)
 
 	.globl pnv_enter_arch207_idle_mode
 pnv_enter_arch207_idle_mode:
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	/* Tell KVM we're entering idle */
+	li	r4,KVM_HWTHREAD_IN_IDLE
+	/******************************************************/
+	/*  N O T E   W E L L    ! ! !    N O T E   W E L L   */
+	/* The following store to HSTATE_HWTHREAD_STATE(r13)  */
+	/* MUST occur in real mode, i.e. with the MMU off,    */
+	/* and the MMU must stay off until we clear this flag */
+	/* and test HSTATE_HWTHREAD_REQ(r13) in the system    */
+	/* reset interrupt vector in exceptions-64s.S.        */
+	/* The reason is that another thread can switch the   */
+	/* MMU to a guest context whenever this flag is set   */
+	/* to KVM_HWTHREAD_IN_IDLE, and if the MMU was on,    */
+	/* that would potentially cause this thread to start  */
+	/* executing instructions from guest memory in        */
+	/* hypervisor mode, leading to a host crash or data   */
+	/* corruption, or worse.                              */
+	/******************************************************/
+	stb	r4,HSTATE_HWTHREAD_STATE(r13)
+#endif
 	stb	r3,PACA_THREAD_IDLE_STATE(r13)
 	cmpwi	cr3,r3,PNV_THREAD_SLEEP
 	bge	cr3,2f
@@ -262,6 +267,12 @@ enter_winkle:
  * r3 - requested stop state
  */
 power_enter_stop:
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	/* Tell KVM we're entering idle */
+	li	r4,KVM_HWTHREAD_IN_IDLE
+	/* DO THIS IN REAL MODE!  See comment above. */
+	stb	r4,HSTATE_HWTHREAD_STATE(r13)
+#endif
 /*
  * Check if the requested state is a deep idle state.
  */
@@ -363,8 +374,8 @@ _GLOBAL(power9_idle_stop)
  * cr3 - set to gt if waking up with partial/complete hypervisor state loss
  */
 _GLOBAL(pnv_restore_hyp_resource)
-	ld	r2,PACATOC(r13);
 BEGIN_FTR_SECTION
+	ld	r2,PACATOC(r13);
 	/*
 	 * POWER ISA 3. Use PSSCR to determine if we
 	 * are waking up from deep idle state
@@ -395,6 +406,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	 */
 	clrldi	r5,r13,63
 	clrrdi	r13,r13,1
+
+	/* Now that we are sure r13 is corrected, load TOC */
+	ld	r2,PACATOC(r13);
 	cmpwi	cr4,r5,1
 	mtspr	SPRN_HSPRG0,r13
 
@@ -420,7 +434,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
  *
  * r13 - PACA
  * cr3 - gt if waking up with partial/complete hypervisor state loss
- * cr4 - eq if waking up from complete hypervisor state loss.
+ * cr4 - gt or eq if waking up from complete hypervisor state loss.
  */
 _GLOBAL(pnv_wakeup_tb_loss)
 	ld	r1,PACAR1(r13)
@@ -462,7 +476,7 @@ lwarx_loop2:
 	 * At this stage
 	 * cr2 - eq if first thread to wakeup in core
 	 * cr3-  gt if waking up with partial/complete hypervisor state loss
-	 * cr4 - eq if waking up from complete hypervisor state loss.
+	 * cr4 - gt or eq if waking up from complete hypervisor state loss.
 	 */
 
 	ori	r15,r15,PNV_CORE_IDLE_LOCK_BIT
@@ -490,7 +504,7 @@ first_thread_in_subcore:
 	 * If waking up from sleep, subcore state is not lost. Hence
 	 * skip subcore state restore
 	 */
-	bne	cr4,subcore_state_restored
+	blt	cr4,subcore_state_restored
 
 	/* Restore per-subcore state */
 	ld      r4,_SDR1(r1)
@@ -535,7 +549,7 @@ timebase_resync:
 	 * If waking up from sleep, per core state is not lost, skip to
 	 * clear_lock.
 	 */
-	bne	cr4,clear_lock
+	blt	cr4,clear_lock
 
 	/*
 	 * First thread in the core to wake up and its waking up with
@@ -566,13 +580,13 @@ common_exit:
 	 * If waking up from sleep, hypervisor state is not lost. Hence
 	 * skip hypervisor state restore.
 	 */
-	bne	cr4,hypervisor_state_restored
+	blt	cr4,hypervisor_state_restored
 
 	/* Waking up from winkle */
 
 BEGIN_MMU_FTR_SECTION
 	b	no_segments
-END_MMU_FTR_SECTION_IFSET(MMU_FTR_RADIX)
+END_MMU_FTR_SECTION_IFSET(MMU_FTR_TYPE_RADIX)
 	/* Restore SLB  from PACA */
 	ld	r8,PACA_SLBSHADOWPTR(r13)
 

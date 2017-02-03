@@ -61,6 +61,12 @@
 
 #define CALLFRAME_SIZ   32
 
+#ifdef CONFIG_64BIT
+#define ST0_KX_IF_64	ST0_KX
+#else
+#define ST0_KX_IF_64	0
+#endif
+
 static unsigned int scratch_vcpu[2] = { C0_DDATA_LO };
 static unsigned int scratch_tmp[2] = { C0_ERROREPC };
 
@@ -120,12 +126,12 @@ static void kvm_mips_build_save_scratch(u32 **p, unsigned int tmp,
 					unsigned int frame)
 {
 	/* Save the VCPU scratch register value in cp0_epc of the stack frame */
-	uasm_i_mfc0(p, tmp, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_MFC0(p, tmp, scratch_vcpu[0], scratch_vcpu[1]);
 	UASM_i_SW(p, tmp, offsetof(struct pt_regs, cp0_epc), frame);
 
 	/* Save the temp scratch register value in cp0_cause of stack frame */
 	if (scratch_tmp[0] == 31) {
-		uasm_i_mfc0(p, tmp, scratch_tmp[0], scratch_tmp[1]);
+		UASM_i_MFC0(p, tmp, scratch_tmp[0], scratch_tmp[1]);
 		UASM_i_SW(p, tmp, offsetof(struct pt_regs, cp0_cause), frame);
 	}
 }
@@ -138,11 +144,30 @@ static void kvm_mips_build_restore_scratch(u32 **p, unsigned int tmp,
 	 * kvm_mips_build_save_scratch().
 	 */
 	UASM_i_LW(p, tmp, offsetof(struct pt_regs, cp0_epc), frame);
-	uasm_i_mtc0(p, tmp, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_MTC0(p, tmp, scratch_vcpu[0], scratch_vcpu[1]);
 
 	if (scratch_tmp[0] == 31) {
 		UASM_i_LW(p, tmp, offsetof(struct pt_regs, cp0_cause), frame);
-		uasm_i_mtc0(p, tmp, scratch_tmp[0], scratch_tmp[1]);
+		UASM_i_MTC0(p, tmp, scratch_tmp[0], scratch_tmp[1]);
+	}
+}
+
+/**
+ * build_set_exc_base() - Assemble code to write exception base address.
+ * @p:		Code buffer pointer.
+ * @reg:	Source register (generated code may set WG bit in @reg).
+ *
+ * Assemble code to modify the exception base address in the EBase register,
+ * using the appropriately sized access and setting the WG bit if necessary.
+ */
+static inline void build_set_exc_base(u32 **p, unsigned int reg)
+{
+	if (cpu_has_ebase_wg) {
+		/* Set WG so that all the bits get written */
+		uasm_i_ori(p, reg, reg, MIPS_EBASE_WG);
+		UASM_i_MTC0(p, reg, C0_EBASE);
+	} else {
+		uasm_i_mtc0(p, reg, C0_EBASE);
 	}
 }
 
@@ -171,7 +196,7 @@ void *kvm_mips_build_vcpu_run(void *addr)
 	 */
 
 	/* k0/k1 not being used in host kernel context */
-	uasm_i_addiu(&p, K1, SP, -(int)sizeof(struct pt_regs));
+	UASM_i_ADDIU(&p, K1, SP, -(int)sizeof(struct pt_regs));
 	for (i = 16; i < 32; ++i) {
 		if (i == 24)
 			i = 28;
@@ -186,10 +211,10 @@ void *kvm_mips_build_vcpu_run(void *addr)
 	kvm_mips_build_save_scratch(&p, V1, K1);
 
 	/* VCPU scratch register has pointer to vcpu */
-	uasm_i_mtc0(&p, A1, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_MTC0(&p, A1, scratch_vcpu[0], scratch_vcpu[1]);
 
 	/* Offset into vcpu->arch */
-	uasm_i_addiu(&p, K1, A1, offsetof(struct kvm_vcpu, arch));
+	UASM_i_ADDIU(&p, K1, A1, offsetof(struct kvm_vcpu, arch));
 
 	/*
 	 * Save the host stack to VCPU, used for exception processing
@@ -204,20 +229,20 @@ void *kvm_mips_build_vcpu_run(void *addr)
 	 * Setup status register for running the guest in UM, interrupts
 	 * are disabled
 	 */
-	UASM_i_LA(&p, K0, ST0_EXL | KSU_USER | ST0_BEV);
+	UASM_i_LA(&p, K0, ST0_EXL | KSU_USER | ST0_BEV | ST0_KX_IF_64);
 	uasm_i_mtc0(&p, K0, C0_STATUS);
 	uasm_i_ehb(&p);
 
 	/* load up the new EBASE */
 	UASM_i_LW(&p, K0, offsetof(struct kvm_vcpu_arch, guest_ebase), K1);
-	uasm_i_mtc0(&p, K0, C0_EBASE);
+	build_set_exc_base(&p, K0);
 
 	/*
 	 * Now that the new EBASE has been loaded, unset BEV, set
 	 * interrupt mask as it was but make sure that timer interrupts
 	 * are enabled
 	 */
-	uasm_i_addiu(&p, K0, ZERO, ST0_EXL | KSU_USER | ST0_IE);
+	uasm_i_addiu(&p, K0, ZERO, ST0_EXL | KSU_USER | ST0_IE | ST0_KX_IF_64);
 	uasm_i_andi(&p, V0, V0, ST0_IM);
 	uasm_i_or(&p, K0, K0, V0);
 	uasm_i_mtc0(&p, K0, C0_STATUS);
@@ -252,7 +277,7 @@ static void *kvm_mips_build_enter_guest(void *addr)
 
 	/* Set Guest EPC */
 	UASM_i_LW(&p, T0, offsetof(struct kvm_vcpu_arch, pc), K1);
-	uasm_i_mtc0(&p, T0, C0_EPC);
+	UASM_i_MTC0(&p, T0, C0_EPC);
 
 	/* Set the ASID for the Guest Kernel */
 	UASM_i_LW(&p, T0, offsetof(struct kvm_vcpu_arch, cop0), K1);
@@ -261,20 +286,20 @@ static void *kvm_mips_build_enter_guest(void *addr)
 	uasm_i_andi(&p, T0, T0, KSU_USER | ST0_ERL | ST0_EXL);
 	uasm_i_xori(&p, T0, T0, KSU_USER);
 	uasm_il_bnez(&p, &r, T0, label_kernel_asid);
-	 uasm_i_addiu(&p, T1, K1,
+	 UASM_i_ADDIU(&p, T1, K1,
 		      offsetof(struct kvm_vcpu_arch, guest_kernel_asid));
 	/* else user */
-	uasm_i_addiu(&p, T1, K1,
+	UASM_i_ADDIU(&p, T1, K1,
 		     offsetof(struct kvm_vcpu_arch, guest_user_asid));
 	uasm_l_kernel_asid(&l, p);
 
 	/* t1: contains the base of the ASID array, need to get the cpu id  */
 	/* smp_processor_id */
-	UASM_i_LW(&p, T2, offsetof(struct thread_info, cpu), GP);
+	uasm_i_lw(&p, T2, offsetof(struct thread_info, cpu), GP);
 	/* x4 */
 	uasm_i_sll(&p, T2, T2, 2);
 	UASM_i_ADDU(&p, T3, T1, T2);
-	UASM_i_LW(&p, K0, 0, T3);
+	uasm_i_lw(&p, K0, 0, T3);
 #ifdef CONFIG_MIPS_ASID_BITS_VARIABLE
 	/* x sizeof(struct cpuinfo_mips)/4 */
 	uasm_i_addiu(&p, T3, ZERO, sizeof(struct cpuinfo_mips)/4);
@@ -344,11 +369,11 @@ void *kvm_mips_build_exception(void *addr, void *handler)
 	memset(relocs, 0, sizeof(relocs));
 
 	/* Save guest k1 into scratch register */
-	uasm_i_mtc0(&p, K1, scratch_tmp[0], scratch_tmp[1]);
+	UASM_i_MTC0(&p, K1, scratch_tmp[0], scratch_tmp[1]);
 
 	/* Get the VCPU pointer from the VCPU scratch register */
-	uasm_i_mfc0(&p, K1, scratch_vcpu[0], scratch_vcpu[1]);
-	uasm_i_addiu(&p, K1, K1, offsetof(struct kvm_vcpu, arch));
+	UASM_i_MFC0(&p, K1, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_ADDIU(&p, K1, K1, offsetof(struct kvm_vcpu, arch));
 
 	/* Save guest k0 into VCPU structure */
 	UASM_i_SW(&p, K0, offsetof(struct kvm_vcpu_arch, gprs[K0]), K1);
@@ -415,13 +440,13 @@ void *kvm_mips_build_exit(void *addr)
 
 	/* Finally save guest k1 to VCPU */
 	uasm_i_ehb(&p);
-	uasm_i_mfc0(&p, T0, scratch_tmp[0], scratch_tmp[1]);
+	UASM_i_MFC0(&p, T0, scratch_tmp[0], scratch_tmp[1]);
 	UASM_i_SW(&p, T0, offsetof(struct kvm_vcpu_arch, gprs[K1]), K1);
 
 	/* Now that context has been saved, we can use other registers */
 
 	/* Restore vcpu */
-	uasm_i_mfc0(&p, A1, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_MFC0(&p, A1, scratch_vcpu[0], scratch_vcpu[1]);
 	uasm_i_move(&p, S1, A1);
 
 	/* Restore run (vcpu->run) */
@@ -433,10 +458,10 @@ void *kvm_mips_build_exit(void *addr)
 	 * Save Host level EPC, BadVaddr and Cause to VCPU, useful to process
 	 * the exception
 	 */
-	uasm_i_mfc0(&p, K0, C0_EPC);
+	UASM_i_MFC0(&p, K0, C0_EPC);
 	UASM_i_SW(&p, K0, offsetof(struct kvm_vcpu_arch, pc), K1);
 
-	uasm_i_mfc0(&p, K0, C0_BADVADDR);
+	UASM_i_MFC0(&p, K0, C0_BADVADDR);
 	UASM_i_SW(&p, K0, offsetof(struct kvm_vcpu_arch, host_cp0_badvaddr),
 		  K1);
 
@@ -457,7 +482,7 @@ void *kvm_mips_build_exit(void *addr)
 
 	UASM_i_LA_mostly(&p, K0, (long)&ebase);
 	UASM_i_LW(&p, K0, uasm_rel_lo((long)&ebase), K0);
-	uasm_i_mtc0(&p, K0, C0_EBASE);
+	build_set_exc_base(&p, K0);
 
 	if (raw_cpu_has_fpu) {
 		/*
@@ -496,6 +521,9 @@ void *kvm_mips_build_exit(void *addr)
 	uasm_i_and(&p, V0, V0, AT);
 	uasm_i_lui(&p, AT, ST0_CU0 >> 16);
 	uasm_i_or(&p, V0, V0, AT);
+#ifdef CONFIG_64BIT
+	uasm_i_ori(&p, V0, V0, ST0_SX | ST0_UX);
+#endif
 	uasm_i_mtc0(&p, V0, C0_STATUS);
 	uasm_i_ehb(&p);
 
@@ -506,7 +534,7 @@ void *kvm_mips_build_exit(void *addr)
 	UASM_i_LW(&p, SP, offsetof(struct kvm_vcpu_arch, host_stack), K1);
 
 	/* Saved host state */
-	uasm_i_addiu(&p, SP, SP, -(int)sizeof(struct pt_regs));
+	UASM_i_ADDIU(&p, SP, SP, -(int)sizeof(struct pt_regs));
 
 	/*
 	 * XXXKYMA do we need to load the host ASID, maybe not because the
@@ -529,7 +557,7 @@ void *kvm_mips_build_exit(void *addr)
 	 */
 	UASM_i_LA(&p, T9, (unsigned long)kvm_mips_handle_exit);
 	uasm_i_jalr(&p, RA, T9);
-	 uasm_i_addiu(&p, SP, SP, -CALLFRAME_SIZ);
+	 UASM_i_ADDIU(&p, SP, SP, -CALLFRAME_SIZ);
 
 	uasm_resolve_relocs(relocs, labels);
 
@@ -569,7 +597,7 @@ static void *kvm_mips_build_ret_from_exit(void *addr)
 	 */
 
 	uasm_i_move(&p, K1, S1);
-	uasm_i_addiu(&p, K1, K1, offsetof(struct kvm_vcpu, arch));
+	UASM_i_ADDIU(&p, K1, K1, offsetof(struct kvm_vcpu, arch));
 
 	/*
 	 * Check return value, should tell us if we are returning to the
@@ -603,7 +631,7 @@ static void *kvm_mips_build_ret_to_guest(void *addr)
 	u32 *p = addr;
 
 	/* Put the saved pointer to vcpu (s1) back into the scratch register */
-	uasm_i_mtc0(&p, S1, scratch_vcpu[0], scratch_vcpu[1]);
+	UASM_i_MTC0(&p, S1, scratch_vcpu[0], scratch_vcpu[1]);
 
 	/* Load up the Guest EBASE to minimize the window where BEV is set */
 	UASM_i_LW(&p, T0, offsetof(struct kvm_vcpu_arch, guest_ebase), K1);
@@ -614,11 +642,11 @@ static void *kvm_mips_build_ret_to_guest(void *addr)
 	uasm_i_or(&p, K0, V1, AT);
 	uasm_i_mtc0(&p, K0, C0_STATUS);
 	uasm_i_ehb(&p);
-	uasm_i_mtc0(&p, T0, C0_EBASE);
+	build_set_exc_base(&p, T0);
 
 	/* Setup status register for running guest in UM */
 	uasm_i_ori(&p, V1, V1, ST0_EXL | KSU_USER | ST0_IE);
-	UASM_i_LA(&p, AT, ~(ST0_CU0 | ST0_MX));
+	UASM_i_LA(&p, AT, ~(ST0_CU0 | ST0_MX | ST0_SX | ST0_UX));
 	uasm_i_and(&p, V1, V1, AT);
 	uasm_i_mtc0(&p, V1, C0_STATUS);
 	uasm_i_ehb(&p);
@@ -645,7 +673,7 @@ static void *kvm_mips_build_ret_to_host(void *addr)
 
 	/* EBASE is already pointing to Linux */
 	UASM_i_LW(&p, K1, offsetof(struct kvm_vcpu_arch, host_stack), K1);
-	uasm_i_addiu(&p, K1, K1, -(int)sizeof(struct pt_regs));
+	UASM_i_ADDIU(&p, K1, K1, -(int)sizeof(struct pt_regs));
 
 	/*
 	 * r2/v0 is the return code, shift it down by 2 (arithmetic)

@@ -133,7 +133,6 @@ struct x509_certificate *x509_cert_parse(const void *data, size_t datalen)
 	return cert;
 
 error_decode:
-	kfree(cert->pub->key);
 	kfree(ctx);
 error_no_ctx:
 	x509_free_certificate(cert);
@@ -199,32 +198,35 @@ int x509_note_pkey_algo(void *context, size_t hdrlen,
 
 	case OID_md4WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "md4";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 
 	case OID_sha1WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "sha1";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 
 	case OID_sha256WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "sha256";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 
 	case OID_sha384WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "sha384";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 
 	case OID_sha512WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "sha512";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 
 	case OID_sha224WithRSAEncryption:
 		ctx->cert->sig->hash_algo = "sha224";
-		goto rsa_pkcs1;
+		ctx->cert->sig->pkey_algo = "rsa";
+		break;
 	}
 
-rsa_pkcs1:
-	ctx->cert->sig->pkey_algo = "rsa";
-	ctx->cert->sig->encoding = "pkcs1";
 	ctx->algo_oid = ctx->last_oid;
 	return 0;
 }

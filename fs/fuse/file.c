@@ -417,6 +417,10 @@ static int fuse_flush(struct file *file, fl_owner_t id)
 	fuse_sync_writes(inode);
 	inode_unlock(inode);
 
+	err = filemap_check_errors(file->f_mapping);
+	if (err)
+		return err;
+
 	req = fuse_get_req_nofail_nopages(fc, file);
 	memset(&inarg, 0, sizeof(inarg));
 	inarg.fh = ff->fh;
@@ -462,6 +466,16 @@ int fuse_fsync_common(struct file *file, loff_t start, loff_t end,
 		goto out;
 
 	fuse_sync_writes(inode);
+
+	/*
+	 * Due to implementation of fuse writeback
+	 * filemap_write_and_wait_range() does not catch errors.
+	 * We have to do this directly after fuse_sync_writes()
+	 */
+	err = filemap_check_errors(file->f_mapping);
+	if (err)
+		goto out;
+
 	err = sync_inode_metadata(inode, 1);
 	if (err)
 		goto out;
@@ -516,13 +530,13 @@ void fuse_read_fill(struct fuse_req *req, struct file *file, loff_t pos,
 	req->out.args[0].size = count;
 }
 
-static void fuse_release_user_pages(struct fuse_req *req, int write)
+static void fuse_release_user_pages(struct fuse_req *req, bool should_dirty)
 {
 	unsigned i;
 
 	for (i = 0; i < req->num_pages; i++) {
 		struct page *page = req->pages[i];
-		if (write)
+		if (should_dirty)
 			set_page_dirty_lock(page);
 		put_page(page);
 	}
@@ -1306,6 +1320,7 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 		       loff_t *ppos, int flags)
 {
 	int write = flags & FUSE_DIO_WRITE;
+	bool should_dirty = !write && iter_is_iovec(iter);
 	int cuse = flags & FUSE_DIO_CUSE;
 	struct file *file = io->file;
 	struct inode *inode = file->f_mapping->host;
@@ -1349,7 +1364,7 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 			nres = fuse_send_read(req, io, pos, nbytes, owner);
 
 		if (!io->async)
-			fuse_release_user_pages(req, !write);
+			fuse_release_user_pages(req, should_dirty);
 		if (req->out.h.error) {
 			err = req->out.h.error;
 			break;
@@ -1970,6 +1985,10 @@ static int fuse_write_end(struct file *file, struct address_space *mapping,
 {
 	struct inode *inode = page->mapping->host;
 
+	/* Haven't copied anything?  Skip zeroing, size extending, dirtying. */
+	if (!copied)
+		goto unlock;
+
 	if (!PageUptodate(page)) {
 		/* Zero any unwritten bytes at the end of the page */
 		size_t endoff = (pos + copied) & ~PAGE_MASK;
@@ -1980,6 +1999,8 @@ static int fuse_write_end(struct file *file, struct address_space *mapping,
 
 	fuse_write_update_size(inode, pos + copied);
 	set_page_dirty(page);
+
+unlock:
 	unlock_page(page);
 	put_page(page);
 
@@ -2311,49 +2332,6 @@ static loff_t fuse_file_llseek(struct file *file, loff_t offset, int whence)
 	return retval;
 }
 
-static int fuse_ioctl_copy_user(struct page **pages, struct iovec *iov,
-			unsigned int nr_segs, size_t bytes, bool to_user)
-{
-	struct iov_iter ii;
-	int page_idx = 0;
-
-	if (!bytes)
-		return 0;
-
-	iov_iter_init(&ii, to_user ? READ : WRITE, iov, nr_segs, bytes);
-
-	while (iov_iter_count(&ii)) {
-		struct page *page = pages[page_idx++];
-		size_t todo = min_t(size_t, PAGE_SIZE, iov_iter_count(&ii));
-		void *kaddr;
-
-		kaddr = kmap(page);
-
-		while (todo) {
-			char __user *uaddr = ii.iov->iov_base + ii.iov_offset;
-			size_t iov_len = ii.iov->iov_len - ii.iov_offset;
-			size_t copy = min(todo, iov_len);
-			size_t left;
-
-			if (!to_user)
-				left = copy_from_user(kaddr, uaddr, copy);
-			else
-				left = copy_to_user(uaddr, kaddr, copy);
-
-			if (unlikely(left))
-				return -EFAULT;
-
-			iov_iter_advance(&ii, copy);
-			todo -= copy;
-			kaddr += copy;
-		}
-
-		kunmap(page);
-	}
-
-	return 0;
-}
-
 /*
  * CUSE servers compiled on 32bit broke on 64bit kernels because the
  * ABI was defined to be 'struct iovec' which is different on 32bit
@@ -2505,8 +2483,9 @@ long fuse_do_ioctl(struct file *file, unsigned int cmd, unsigned long arg,
 	struct iovec *iov_page = NULL;
 	struct iovec *in_iov = NULL, *out_iov = NULL;
 	unsigned int in_iovs = 0, out_iovs = 0, num_pages = 0, max_pages;
-	size_t in_size, out_size, transferred;
-	int err;
+	size_t in_size, out_size, transferred, c;
+	int err, i;
+	struct iov_iter ii;
 
 #if BITS_PER_LONG == 32
 	inarg.flags |= FUSE_IOCTL_32BIT;
@@ -2588,10 +2567,13 @@ long fuse_do_ioctl(struct file *file, unsigned int cmd, unsigned long arg,
 		req->in.args[1].size = in_size;
 		req->in.argpages = 1;
 
-		err = fuse_ioctl_copy_user(pages, in_iov, in_iovs, in_size,
-					   false);
-		if (err)
-			goto out;
+		err = -EFAULT;
+		iov_iter_init(&ii, WRITE, in_iov, in_iovs, in_size);
+		for (i = 0; iov_iter_count(&ii) && !WARN_ON(i >= num_pages); i++) {
+			c = copy_page_from_iter(pages[i], 0, PAGE_SIZE, &ii);
+			if (c != PAGE_SIZE && iov_iter_count(&ii))
+				goto out;
+		}
 	}
 
 	req->out.numargs = 2;
@@ -2657,7 +2639,14 @@ long fuse_do_ioctl(struct file *file, unsigned int cmd, unsigned long arg,
 	if (transferred > inarg.out_size)
 		goto out;
 
-	err = fuse_ioctl_copy_user(pages, out_iov, out_iovs, transferred, true);
+	err = -EFAULT;
+	iov_iter_init(&ii, READ, out_iov, out_iovs, transferred);
+	for (i = 0; iov_iter_count(&ii) && !WARN_ON(i >= num_pages); i++) {
+		c = copy_page_to_iter(pages[i], 0, PAGE_SIZE, &ii);
+		if (c != PAGE_SIZE && iov_iter_count(&ii))
+			goto out;
+	}
+	err = 0;
  out:
 	if (req)
 		fuse_put_request(fc, req);
@@ -2827,7 +2816,7 @@ static void fuse_do_truncate(struct file *file)
 	attr.ia_file = file;
 	attr.ia_valid |= ATTR_FILE;
 
-	fuse_do_setattr(inode, &attr, file);
+	fuse_do_setattr(file_dentry(file), &attr, file);
 }
 
 static inline loff_t fuse_round_up(loff_t off)

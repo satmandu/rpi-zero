@@ -115,8 +115,8 @@ static void omap_framebuffer_destroy(struct drm_framebuffer *fb)
 
 	for (i = 0; i < n; i++) {
 		struct plane *plane = &omap_fb->planes[i];
-		if (plane->bo)
-			drm_gem_object_unreference_unlocked(plane->bo);
+
+		drm_gem_object_unreference_unlocked(plane->bo);
 	}
 
 	kfree(omap_fb);
@@ -179,24 +179,24 @@ void omap_framebuffer_update_scanout(struct drm_framebuffer *fb,
 					(uint32_t)win->rotation);
 			/* fallthru to default to no rotation */
 		case 0:
-		case BIT(DRM_ROTATE_0):
+		case DRM_ROTATE_0:
 			orient = 0;
 			break;
-		case BIT(DRM_ROTATE_90):
+		case DRM_ROTATE_90:
 			orient = MASK_XY_FLIP | MASK_X_INVERT;
 			break;
-		case BIT(DRM_ROTATE_180):
+		case DRM_ROTATE_180:
 			orient = MASK_X_INVERT | MASK_Y_INVERT;
 			break;
-		case BIT(DRM_ROTATE_270):
+		case DRM_ROTATE_270:
 			orient = MASK_XY_FLIP | MASK_Y_INVERT;
 			break;
 		}
 
-		if (win->rotation & BIT(DRM_REFLECT_X))
+		if (win->rotation & DRM_REFLECT_X)
 			orient ^= MASK_X_INVERT;
 
-		if (win->rotation & BIT(DRM_REFLECT_Y))
+		if (win->rotation & DRM_REFLECT_Y)
 			orient ^= MASK_Y_INVERT;
 
 		/* adjust x,y offset for flip/invert: */
@@ -213,7 +213,7 @@ void omap_framebuffer_update_scanout(struct drm_framebuffer *fb,
 	} else {
 		switch (win->rotation & DRM_ROTATE_MASK) {
 		case 0:
-		case BIT(DRM_ROTATE_0):
+		case DRM_ROTATE_0:
 			/* OK */
 			break;
 

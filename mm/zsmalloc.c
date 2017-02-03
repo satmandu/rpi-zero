@@ -31,8 +31,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define CREATE_TRACE_POINTS
-
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -55,7 +53,6 @@
 #include <linux/mount.h>
 #include <linux/migrate.h>
 #include <linux/pagemap.h>
-#include <trace/events/zsmalloc.h>
 
 #define ZSPAGE_MAGIC	0x58
 
@@ -1287,61 +1284,21 @@ out:
 
 #endif /* CONFIG_PGTABLE_MAPPING */
 
-static int zs_cpu_notifier(struct notifier_block *nb, unsigned long action,
-				void *pcpu)
+static int zs_cpu_prepare(unsigned int cpu)
 {
-	int ret, cpu = (long)pcpu;
 	struct mapping_area *area;
 
-	switch (action) {
-	case CPU_UP_PREPARE:
-		area = &per_cpu(zs_map_area, cpu);
-		ret = __zs_cpu_up(area);
-		if (ret)
-			return notifier_from_errno(ret);
-		break;
-	case CPU_DEAD:
-	case CPU_UP_CANCELED:
-		area = &per_cpu(zs_map_area, cpu);
-		__zs_cpu_down(area);
-		break;
-	}
-
-	return NOTIFY_OK;
+	area = &per_cpu(zs_map_area, cpu);
+	return __zs_cpu_up(area);
 }
 
-static struct notifier_block zs_cpu_nb = {
-	.notifier_call = zs_cpu_notifier
-};
-
-static int zs_register_cpu_notifier(void)
+static int zs_cpu_dead(unsigned int cpu)
 {
-	int cpu, uninitialized_var(ret);
+	struct mapping_area *area;
 
-	cpu_notifier_register_begin();
-
-	__register_cpu_notifier(&zs_cpu_nb);
-	for_each_online_cpu(cpu) {
-		ret = zs_cpu_notifier(NULL, CPU_UP_PREPARE, (void *)(long)cpu);
-		if (notifier_to_errno(ret))
-			break;
-	}
-
-	cpu_notifier_register_done();
-	return notifier_to_errno(ret);
-}
-
-static void zs_unregister_cpu_notifier(void)
-{
-	int cpu;
-
-	cpu_notifier_register_begin();
-
-	for_each_online_cpu(cpu)
-		zs_cpu_notifier(NULL, CPU_DEAD, (void *)(long)cpu);
-	__unregister_cpu_notifier(&zs_cpu_nb);
-
-	cpu_notifier_register_done();
+	area = &per_cpu(zs_map_area, cpu);
+	__zs_cpu_down(area);
+	return 0;
 }
 
 static void __init init_zs_size_classes(void)
@@ -1770,12 +1727,9 @@ struct zs_compact_control {
 	/* Destination page for migration which should be a first page
 	 * of zspage. */
 	struct page *d_page;
-	/* Starting object index within @s_page which used for live object
-	 * in the subpage. */
+	 /* Starting object index within @s_page which used for live object
+	  * in the subpage. */
 	int obj_idx;
-
-	unsigned long nr_migrated_obj;
-	unsigned long nr_freed_pages;
 };
 
 static int migrate_zspage(struct zs_pool *pool, struct size_class *class,
@@ -1809,7 +1763,6 @@ static int migrate_zspage(struct zs_pool *pool, struct size_class *class,
 		free_obj = obj_malloc(class, get_zspage(d_page), handle);
 		zs_object_copy(class, free_obj, used_obj);
 		obj_idx++;
-		cc->nr_migrated_obj++;
 		/*
 		 * record_obj updates handle's value to free_obj and it will
 		 * invalidate lock bit(ie, HANDLE_PIN_BIT) of handle, which
@@ -2181,8 +2134,7 @@ static int zs_register_migration(struct zs_pool *pool)
 static void zs_unregister_migration(struct zs_pool *pool)
 {
 	flush_work(&pool->free_work);
-	if (pool->inode)
-		iput(pool->inode);
+	iput(pool->inode);
 }
 
 /*
@@ -2268,10 +2220,7 @@ static unsigned long zs_can_compact(struct size_class *class)
 
 static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 {
-	struct zs_compact_control cc = {
-		.nr_migrated_obj = 0,
-		.nr_freed_pages = 0,
-	};
+	struct zs_compact_control cc;
 	struct zspage *src_zspage;
 	struct zspage *dst_zspage = NULL;
 
@@ -2303,7 +2252,7 @@ static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 		putback_zspage(class, dst_zspage);
 		if (putback_zspage(class, src_zspage) == ZS_EMPTY) {
 			free_zspage(pool, class, src_zspage);
-			cc.nr_freed_pages += class->pages_per_zspage;
+			pool->stats.pages_compacted += class->pages_per_zspage;
 		}
 		spin_unlock(&class->lock);
 		cond_resched();
@@ -2314,18 +2263,12 @@ static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 		putback_zspage(class, src_zspage);
 
 	spin_unlock(&class->lock);
-
-	pool->stats.pages_compacted += cc.nr_freed_pages;
-	trace_zs_compact(class->index, cc.nr_migrated_obj, cc.nr_freed_pages);
 }
 
 unsigned long zs_compact(struct zs_pool *pool)
 {
 	int i;
 	struct size_class *class;
-	unsigned long pages_compacted_before = pool->stats.pages_compacted;
-
-	trace_zs_compact_start(pool->name);
 
 	for (i = zs_size_classes - 1; i >= 0; i--) {
 		class = pool->size_class[i];
@@ -2335,9 +2278,6 @@ unsigned long zs_compact(struct zs_pool *pool)
 			continue;
 		__zs_compact(pool, class);
 	}
-
-	trace_zs_compact_end(pool->name,
-		pool->stats.pages_compacted - pages_compacted_before);
 
 	return pool->stats.pages_compacted;
 }
@@ -2554,10 +2494,10 @@ static int __init zs_init(void)
 	if (ret)
 		goto out;
 
-	ret = zs_register_cpu_notifier();
-
+	ret = cpuhp_setup_state(CPUHP_MM_ZS_PREPARE, "mm/zsmalloc:prepare",
+				zs_cpu_prepare, zs_cpu_dead);
 	if (ret)
-		goto notifier_fail;
+		goto hp_setup_fail;
 
 	init_zs_size_classes();
 
@@ -2569,8 +2509,7 @@ static int __init zs_init(void)
 
 	return 0;
 
-notifier_fail:
-	zs_unregister_cpu_notifier();
+hp_setup_fail:
 	zsmalloc_unmount();
 out:
 	return ret;
@@ -2582,7 +2521,7 @@ static void __exit zs_exit(void)
 	zpool_unregister_driver(&zs_zpool_driver);
 #endif
 	zsmalloc_unmount();
-	zs_unregister_cpu_notifier();
+	cpuhp_remove_state(CPUHP_MM_ZS_PREPARE);
 
 	zs_stat_exit();
 }

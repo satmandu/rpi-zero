@@ -80,7 +80,7 @@ bool xen_vcpu_stolen(int vcpu)
 	return per_cpu(xen_runstate, vcpu).state == RUNSTATE_runnable;
 }
 
-static u64 xen_steal_clock(int cpu)
+u64 xen_steal_clock(int cpu)
 {
 	struct vcpu_runstate_info state;
 
@@ -95,7 +95,7 @@ void xen_setup_runstate_info(int cpu)
 	area.addr.v = &per_cpu(xen_runstate, cpu);
 
 	if (HYPERVISOR_vcpu_op(VCPUOP_register_runstate_memory_area,
-			       cpu, &area))
+			       xen_vcpu_nr(cpu), &area))
 		BUG();
 }
 

@@ -20,11 +20,6 @@ extern void request_event_sources_irqs(struct device_node *np,
 
 #include <linux/of.h>
 
-extern void __init fw_hypertas_feature_init(const char *hypertas,
-					    unsigned long len);
-extern void __init fw_vec5_feature_init(const char *hypertas,
-					unsigned long len);
-
 struct pt_regs;
 
 extern int pSeries_system_reset_exception(struct pt_regs *regs);
@@ -56,6 +51,8 @@ extern int dlpar_detach_node(struct device_node *);
 extern int dlpar_acquire_drc(u32 drc_index);
 extern int dlpar_release_drc(u32 drc_index);
 
+void queue_hotplug_event(struct pseries_hp_errorlog *hp_errlog,
+			 struct completion *hotplug_done, int *rc);
 #ifdef CONFIG_MEMORY_HOTPLUG
 int dlpar_memory(struct pseries_hp_errorlog *hp_elog);
 #else
@@ -81,5 +78,24 @@ int pseries_root_bridge_prepare(struct pci_host_bridge *bridge);
 extern struct pci_controller_ops pseries_pci_controller_ops;
 
 unsigned long pseries_memory_block_size(void);
+
+extern int CMO_PrPSP;
+extern int CMO_SecPSP;
+extern unsigned long CMO_PageSize;
+
+static inline int cmo_get_primary_psp(void)
+{
+	return CMO_PrPSP;
+}
+
+static inline int cmo_get_secondary_psp(void)
+{
+	return CMO_SecPSP;
+}
+
+static inline unsigned long cmo_get_page_size(void)
+{
+	return CMO_PageSize;
+}
 
 #endif /* _PSERIES_PSERIES_H */

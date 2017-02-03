@@ -166,6 +166,28 @@ int pnv_cxl_ioda_msi_setup(struct pci_dev *dev, unsigned int hwirq,
 }
 EXPORT_SYMBOL(pnv_cxl_ioda_msi_setup);
 
+#if IS_MODULE(CONFIG_CXL)
+static inline int get_cxl_module(void)
+{
+	struct module *cxl_module;
+
+	mutex_lock(&module_mutex);
+
+	cxl_module = find_module("cxl");
+	if (cxl_module)
+		__module_get(cxl_module);
+
+	mutex_unlock(&module_mutex);
+
+	if (!cxl_module)
+		return -ENODEV;
+
+	return 0;
+}
+#else
+static inline int get_cxl_module(void) { return 0; }
+#endif
+
 /*
  * Sets flags and switches the controller ops to enable the cxl kernel api.
  * Originally the cxl kernel API operated on a virtual PHB, but certain cards
@@ -175,7 +197,7 @@ EXPORT_SYMBOL(pnv_cxl_ioda_msi_setup);
 int pnv_cxl_enable_phb_kernel_api(struct pci_controller *hose, bool enable)
 {
 	struct pnv_phb *phb = hose->private_data;
-	struct module *cxl_module;
+	int rc;
 
 	if (!enable) {
 		/*
@@ -194,13 +216,9 @@ int pnv_cxl_enable_phb_kernel_api(struct pci_controller *hose, bool enable)
 	 * long as we are in this mode (and since we can't safely disable this
 	 * mode once enabled...).
 	 */
-	mutex_lock(&module_mutex);
-	cxl_module = find_module("cxl");
-	if (cxl_module)
-		__module_get(cxl_module);
-	mutex_unlock(&module_mutex);
-	if (!cxl_module)
-		return -ENODEV;
+	rc = get_cxl_module();
+	if (rc)
+		return rc;
 
 	phb->flags |= PNV_PHB_FLAG_CXL;
 	hose->controller_ops = pnv_cxl_cx4_ioda_controller_ops;
@@ -326,7 +344,7 @@ int pnv_cxl_cx4_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 			return (hwirq ? hwirq : -ENOMEM);
 
 		virq = irq_create_mapping(NULL, hwirq);
-		if (virq == NO_IRQ) {
+		if (!virq) {
 			pr_warn("%s: Failed to map cxl mode MSI to linux irq\n",
 				pci_name(pdev));
 			return -ENOMEM;
@@ -356,7 +374,7 @@ void pnv_cxl_cx4_teardown_msi_irqs(struct pci_dev *pdev)
 		return;
 
 	for_each_pci_msi_entry(entry, pdev) {
-		if (entry->irq == NO_IRQ)
+		if (!entry->irq)
 			continue;
 		hwirq = virq_to_hw(entry->irq);
 		irq_set_msi_desc(entry->irq, NULL);

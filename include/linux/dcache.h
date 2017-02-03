@@ -130,15 +130,16 @@ struct dentry_operations {
 	int (*d_revalidate)(struct dentry *, unsigned int);
 	int (*d_weak_revalidate)(struct dentry *, unsigned int);
 	int (*d_hash)(const struct dentry *, struct qstr *);
-	int (*d_compare)(const struct dentry *, const struct dentry *,
+	int (*d_compare)(const struct dentry *,
 			unsigned int, const char *, const struct qstr *);
 	int (*d_delete)(const struct dentry *);
+	int (*d_init)(struct dentry *);
 	void (*d_release)(struct dentry *);
 	void (*d_prune)(struct dentry *);
 	void (*d_iput)(struct dentry *, struct inode *);
 	char *(*d_dname)(struct dentry *, char *, int);
 	struct vfsmount *(*d_automount)(struct path *);
-	int (*d_manage)(struct dentry *, bool);
+	int (*d_manage)(const struct path *, bool);
 	struct dentry *(*d_real)(struct dentry *, const struct inode *,
 				 unsigned int);
 } ____cacheline_aligned;
@@ -253,7 +254,7 @@ extern struct dentry *d_find_alias(struct inode *);
 extern void d_prune_aliases(struct inode *);
 
 /* test whether we have any submounts in a subdir tree */
-extern int have_submounts(struct dentry *);
+extern int path_has_submounts(const struct path *);
 
 /*
  * This adds the entry to the hash queues.
@@ -262,7 +263,7 @@ extern void d_rehash(struct dentry *);
  
 extern void d_add(struct dentry *, struct inode *);
 
-extern void dentry_update_name_case(struct dentry *, struct qstr *);
+extern void dentry_update_name_case(struct dentry *, const struct qstr *);
 
 /* used for rename() and baskets */
 extern void d_move(struct dentry *, struct dentry *);
@@ -583,9 +584,10 @@ static inline struct dentry *d_real(struct dentry *dentry,
  * If dentry is on an union/overlay, then return the underlying, real inode.
  * Otherwise return d_inode().
  */
-static inline struct inode *d_real_inode(struct dentry *dentry)
+static inline struct inode *d_real_inode(const struct dentry *dentry)
 {
-	return d_backing_inode(d_real(dentry, NULL, 0));
+	/* This usage of d_real() results in const dentry */
+	return d_backing_inode(d_real((struct dentry *) dentry, NULL, 0));
 }
 
 

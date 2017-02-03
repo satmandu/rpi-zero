@@ -16,7 +16,7 @@ EVENT(PM_CYC,					0x0001e)
 EVENT(PM_ICT_NOSLOT_CYC,			0x100f8)
 EVENT(PM_CMPLU_STALL,				0x1e054)
 EVENT(PM_INST_CMPL,				0x00002)
-EVENT(PM_BRU_CMPL,				0x40060)
+EVENT(PM_BRU_CMPL,				0x10012)
 EVENT(PM_BR_MPRED_CMPL,				0x400f6)
 
 /* All L1 D cache load references counted at finish, gated by reject */
@@ -34,15 +34,15 @@ EVENT(PM_L1_ICACHE_MISS,			0x200fd)
 /* Instruction Demand sectors wriittent into IL1 */
 EVENT(PM_L1_DEMAND_WRITE,			0x0408c)
 /* Instruction prefetch written into IL1 */
-EVENT(PM_IC_PREF_WRITE,				0x0408e)
+EVENT(PM_IC_PREF_WRITE,				0x0488c)
 /* The data cache was reloaded from local core's L3 due to a demand load */
 EVENT(PM_DATA_FROM_L3,				0x4c042)
 /* Demand LD - L3 Miss (not L2 hit and not L3 hit) */
 EVENT(PM_DATA_FROM_L3MISS,			0x300fe)
 /* All successful D-side store dispatches for this thread */
-EVENT(PM_L2_ST,					0x16081)
+EVENT(PM_L2_ST,					0x16880)
 /* All successful D-side store dispatches for this thread that were L2 Miss */
-EVENT(PM_L2_ST_MISS,				0x26081)
+EVENT(PM_L2_ST_MISS,				0x26880)
 /* Total HW L3 prefetches(Load+store) */
 EVENT(PM_L3_PREF_ALL,				0x4e052)
 /* Data PTEG reload */

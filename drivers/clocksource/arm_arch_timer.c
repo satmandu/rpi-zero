@@ -8,6 +8,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
+
+#define pr_fmt(fmt)	"arm_arch_timer: " fmt
+
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -78,6 +81,7 @@ static struct clock_event_device __percpu *arch_timer_evt;
 static enum ppi_nr arch_timer_uses_ppi = VIRT_PPI;
 static bool arch_timer_c3stop;
 static bool arch_timer_mem_use_virtual;
+static bool arch_counter_suspend_stop;
 
 static bool evtstrm_enable = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 
@@ -90,6 +94,43 @@ early_param("clocksource.arm_arch_timer.evtstrm", early_evtstrm_cfg);
 /*
  * Architected system timer support.
  */
+
+#ifdef CONFIG_FSL_ERRATUM_A008585
+DEFINE_STATIC_KEY_FALSE(arch_timer_read_ool_enabled);
+EXPORT_SYMBOL_GPL(arch_timer_read_ool_enabled);
+
+static int fsl_a008585_enable = -1;
+
+static int __init early_fsl_a008585_cfg(char *buf)
+{
+	int ret;
+	bool val;
+
+	ret = strtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	fsl_a008585_enable = val;
+	return 0;
+}
+early_param("clocksource.arm_arch_timer.fsl-a008585", early_fsl_a008585_cfg);
+
+u32 __fsl_a008585_read_cntp_tval_el0(void)
+{
+	return __fsl_a008585_read_reg(cntp_tval_el0);
+}
+
+u32 __fsl_a008585_read_cntv_tval_el0(void)
+{
+	return __fsl_a008585_read_reg(cntv_tval_el0);
+}
+
+u64 __fsl_a008585_read_cntvct_el0(void)
+{
+	return __fsl_a008585_read_reg(cntvct_el0);
+}
+EXPORT_SYMBOL(__fsl_a008585_read_cntvct_el0);
+#endif /* CONFIG_FSL_ERRATUM_A008585 */
 
 static __always_inline
 void arch_timer_reg_write(int access, enum arch_timer_reg reg, u32 val,
@@ -240,6 +281,40 @@ static __always_inline void set_next_event(const int access, unsigned long evt,
 	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
 }
 
+#ifdef CONFIG_FSL_ERRATUM_A008585
+static __always_inline void fsl_a008585_set_next_event(const int access,
+		unsigned long evt, struct clock_event_device *clk)
+{
+	unsigned long ctrl;
+	u64 cval = evt + arch_counter_get_cntvct();
+
+	ctrl = arch_timer_reg_read(access, ARCH_TIMER_REG_CTRL, clk);
+	ctrl |= ARCH_TIMER_CTRL_ENABLE;
+	ctrl &= ~ARCH_TIMER_CTRL_IT_MASK;
+
+	if (access == ARCH_TIMER_PHYS_ACCESS)
+		write_sysreg(cval, cntp_cval_el0);
+	else if (access == ARCH_TIMER_VIRT_ACCESS)
+		write_sysreg(cval, cntv_cval_el0);
+
+	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
+}
+
+static int fsl_a008585_set_next_event_virt(unsigned long evt,
+					   struct clock_event_device *clk)
+{
+	fsl_a008585_set_next_event(ARCH_TIMER_VIRT_ACCESS, evt, clk);
+	return 0;
+}
+
+static int fsl_a008585_set_next_event_phys(unsigned long evt,
+					   struct clock_event_device *clk)
+{
+	fsl_a008585_set_next_event(ARCH_TIMER_PHYS_ACCESS, evt, clk);
+	return 0;
+}
+#endif /* CONFIG_FSL_ERRATUM_A008585 */
+
 static int arch_timer_set_next_event_virt(unsigned long evt,
 					  struct clock_event_device *clk)
 {
@@ -266,6 +341,19 @@ static int arch_timer_set_next_event_phys_mem(unsigned long evt,
 {
 	set_next_event(ARCH_TIMER_MEM_PHYS_ACCESS, evt, clk);
 	return 0;
+}
+
+static void fsl_a008585_set_sne(struct clock_event_device *clk)
+{
+#ifdef CONFIG_FSL_ERRATUM_A008585
+	if (!static_branch_unlikely(&arch_timer_read_ool_enabled))
+		return;
+
+	if (arch_timer_uses_ppi == VIRT_PPI)
+		clk->set_next_event = fsl_a008585_set_next_event_virt;
+	else
+		clk->set_next_event = fsl_a008585_set_next_event_phys;
+#endif
 }
 
 static void __arch_timer_setup(unsigned type,
@@ -296,6 +384,8 @@ static void __arch_timer_setup(unsigned type,
 		default:
 			BUG();
 		}
+
+		fsl_a008585_set_sne(clk);
 	} else {
 		clk->features |= CLOCK_EVT_FEAT_DYNIRQ;
 		clk->name = "arch_mem_timer";
@@ -370,16 +460,33 @@ static bool arch_timer_has_nonsecure_ppi(void)
 		arch_timer_ppi[PHYS_NONSECURE_PPI]);
 }
 
+static u32 check_ppi_trigger(int irq)
+{
+	u32 flags = irq_get_trigger_type(irq);
+
+	if (flags != IRQF_TRIGGER_HIGH && flags != IRQF_TRIGGER_LOW) {
+		pr_warn("WARNING: Invalid trigger for IRQ%d, assuming level low\n", irq);
+		pr_warn("WARNING: Please fix your firmware\n");
+		flags = IRQF_TRIGGER_LOW;
+	}
+
+	return flags;
+}
+
 static int arch_timer_starting_cpu(unsigned int cpu)
 {
 	struct clock_event_device *clk = this_cpu_ptr(arch_timer_evt);
+	u32 flags;
 
 	__arch_timer_setup(ARCH_CP15_TIMER, clk);
 
-	enable_percpu_irq(arch_timer_ppi[arch_timer_uses_ppi], 0);
+	flags = check_ppi_trigger(arch_timer_ppi[arch_timer_uses_ppi]);
+	enable_percpu_irq(arch_timer_ppi[arch_timer_uses_ppi], flags);
 
-	if (arch_timer_has_nonsecure_ppi())
-		enable_percpu_irq(arch_timer_ppi[PHYS_NONSECURE_PPI], 0);
+	if (arch_timer_has_nonsecure_ppi()) {
+		flags = check_ppi_trigger(arch_timer_ppi[PHYS_NONSECURE_PPI]);
+		enable_percpu_irq(arch_timer_ppi[PHYS_NONSECURE_PPI], flags);
+	}
 
 	arch_counter_set_user_access();
 	if (evtstrm_enable)
@@ -455,12 +562,12 @@ static u64 arch_counter_get_cntvct_mem(void)
  */
 u64 (*arch_timer_read_counter)(void) = arch_counter_get_cntvct;
 
-static cycle_t arch_counter_read(struct clocksource *cs)
+static u64 arch_counter_read(struct clocksource *cs)
 {
 	return arch_timer_read_counter();
 }
 
-static cycle_t arch_counter_read_cc(const struct cyclecounter *cc)
+static u64 arch_counter_read_cc(const struct cyclecounter *cc)
 {
 	return arch_timer_read_counter();
 }
@@ -470,7 +577,7 @@ static struct clocksource clocksource_counter = {
 	.rating	= 400,
 	.read	= arch_counter_read,
 	.mask	= CLOCKSOURCE_MASK(56),
-	.flags	= CLOCK_SOURCE_IS_CONTINUOUS | CLOCK_SOURCE_SUSPEND_NONSTOP,
+	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 static struct cyclecounter cyclecounter = {
@@ -495,17 +602,23 @@ static void __init arch_counter_register(unsigned type)
 			arch_timer_read_counter = arch_counter_get_cntvct;
 		else
 			arch_timer_read_counter = arch_counter_get_cntpct;
+
+		clocksource_counter.archdata.vdso_direct = true;
+
+#ifdef CONFIG_FSL_ERRATUM_A008585
+		/*
+		 * Don't use the vdso fastpath if errata require using
+		 * the out-of-line counter accessor.
+		 */
+		if (static_branch_unlikely(&arch_timer_read_ool_enabled))
+			clocksource_counter.archdata.vdso_direct = false;
+#endif
 	} else {
 		arch_timer_read_counter = arch_counter_get_cntvct_mem;
-
-		/* If the clocksource name is "arch_sys_counter" the
-		 * VDSO will attempt to read the CP15-based counter.
-		 * Ensure this does not happen when CP15-based
-		 * counter is not available.
-		 */
-		clocksource_counter.name = "arch_mem_counter";
 	}
 
+	if (!arch_counter_suspend_stop)
+		clocksource_counter.flags |= CLOCK_SOURCE_SUSPEND_NONSTOP;
 	start_count = arch_timer_read_counter();
 	clocksource_register_hz(&clocksource_counter, arch_timer_rate);
 	cyclecounter.mult = clocksource_counter.mult;
@@ -625,7 +738,7 @@ static int __init arch_timer_register(void)
 
 	/* Register and immediately configure the timer on the boot CPU */
 	err = cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING,
-				"AP_ARM_ARCH_TIMER_STARTING",
+				"clockevents/arm/arch_timer:starting",
 				arch_timer_starting_cpu, arch_timer_dying_cpu);
 	if (err)
 		goto out_unreg_cpupm;
@@ -780,6 +893,15 @@ static int __init arch_timer_of_init(struct device_node *np)
 
 	arch_timer_c3stop = !of_property_read_bool(np, "always-on");
 
+#ifdef CONFIG_FSL_ERRATUM_A008585
+	if (fsl_a008585_enable < 0)
+		fsl_a008585_enable = of_property_read_bool(np, "fsl,erratum-a008585");
+	if (fsl_a008585_enable) {
+		static_branch_enable(&arch_timer_read_ool_enabled);
+		pr_info("Enabling workaround for FSL erratum A-008585\n");
+	}
+#endif
+
 	/*
 	 * If we cannot rely on firmware initializing the timer registers then
 	 * we should use the physical timers instead.
@@ -787,6 +909,10 @@ static int __init arch_timer_of_init(struct device_node *np)
 	if (IS_ENABLED(CONFIG_ARM) &&
 	    of_property_read_bool(np, "arm,cpu-registers-not-fw-configured"))
 		arch_timer_uses_ppi = PHYS_SECURE_PPI;
+
+	/* On some systems, the counter stops ticking when in suspend. */
+	arch_counter_suspend_stop = of_property_read_bool(np,
+							 "arm,no-tick-in-suspend");
 
 	return arch_timer_init();
 }
@@ -845,8 +971,9 @@ static int __init arch_timer_mem_init(struct device_node *np)
 	}
 
 	ret= -ENXIO;
-	base = arch_counter_base = of_iomap(best_frame, 0);
-	if (!base) {
+	base = arch_counter_base = of_io_request_and_map(best_frame, 0,
+							 "arch_mem_timer");
+	if (IS_ERR(base)) {
 		pr_err("arch_timer: Can't map frame's registers\n");
 		goto out;
 	}

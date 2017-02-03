@@ -52,7 +52,7 @@ static void ti_thermal_work(struct work_struct *work)
 	struct ti_thermal_data *data = container_of(work,
 					struct ti_thermal_data, thermal_wq);
 
-	thermal_zone_device_update(data->ti_thermal);
+	thermal_zone_device_update(data->ti_thermal, THERMAL_EVENT_UNSPECIFIED);
 
 	dev_dbg(&data->ti_thermal->device, "updated thermal zone %s\n",
 		data->ti_thermal->type);
@@ -193,14 +193,19 @@ static int ti_thermal_set_mode(struct thermal_zone_device *thermal,
 		return 0;
 	}
 
+	mutex_lock(&data->ti_thermal->lock);
+
 	if (mode == THERMAL_DEVICE_ENABLED)
 		data->ti_thermal->polling_delay = FAST_TEMP_MONITORING_RATE;
 	else
 		data->ti_thermal->polling_delay = 0;
 
+	mutex_unlock(&data->ti_thermal->lock);
+
 	data->mode = mode;
 	ti_bandgap_write_update_interval(bgp, data->sensor_id,
 					data->ti_thermal->polling_delay);
+	thermal_zone_device_update(data->ti_thermal, THERMAL_EVENT_UNSPECIFIED);
 	dev_dbg(&thermal->device, "thermal polling set for duration=%d msec\n",
 		data->ti_thermal->polling_delay);
 

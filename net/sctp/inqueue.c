@@ -89,12 +89,10 @@ void sctp_inq_push(struct sctp_inq *q, struct sctp_chunk *chunk)
 	 * Eventually, we should clean up inqueue to not rely
 	 * on the BH related data structures.
 	 */
-	local_bh_disable();
 	list_add_tail(&chunk->list, &q->in_chunk_list);
 	if (chunk->asoc)
 		chunk->asoc->stats.ipackets++;
 	q->immediate.func(&q->immediate);
-	local_bh_enable();
 }
 
 /* Peek at the next chunk on the inqeue. */
@@ -172,19 +170,6 @@ next_chunk:
 
 		chunk = list_entry(entry, struct sctp_chunk, list);
 
-		/* Linearize if it's not GSO */
-		if ((skb_shinfo(chunk->skb)->gso_type & SKB_GSO_SCTP) != SKB_GSO_SCTP &&
-		    skb_is_nonlinear(chunk->skb)) {
-			if (skb_linearize(chunk->skb)) {
-				__SCTP_INC_STATS(dev_net(chunk->skb->dev), SCTP_MIB_IN_PKT_DISCARDS);
-				sctp_chunk_free(chunk);
-				goto next_chunk;
-			}
-
-			/* Update sctp_hdr as it probably changed */
-			chunk->sctp_hdr = sctp_hdr(chunk->skb);
-		}
-
 		if ((skb_shinfo(chunk->skb)->gso_type & SKB_GSO_SCTP) == SKB_GSO_SCTP) {
 			/* GSO-marked skbs but without frags, handle
 			 * them normally
@@ -228,7 +213,7 @@ new_skb:
 	}
 
 	chunk->chunk_hdr = ch;
-	chunk->chunk_end = ((__u8 *)ch) + WORD_ROUND(ntohs(ch->length));
+	chunk->chunk_end = ((__u8 *)ch) + SCTP_PAD4(ntohs(ch->length));
 	skb_pull(chunk->skb, sizeof(sctp_chunkhdr_t));
 	chunk->subh.v = NULL; /* Subheader is no longer valid.  */
 

@@ -244,7 +244,7 @@ static int m41t80_alarm_irq_enable(struct device *dev, unsigned int enabled)
 
 	retval = i2c_smbus_write_byte_data(client, M41T80_REG_ALARM_MON, flags);
 	if (retval < 0) {
-		dev_info(dev, "Unable to enable alarm IRQ %d\n", retval);
+		dev_err(dev, "Unable to enable alarm IRQ %d\n", retval);
 		return retval;
 	}
 	return 0;
@@ -334,6 +334,30 @@ static struct rtc_class_ops m41t80_rtc_ops = {
 	.set_time = m41t80_rtc_set_time,
 	.proc = m41t80_rtc_proc,
 };
+
+#ifdef CONFIG_PM_SLEEP
+static int m41t80_suspend(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	if (client->irq >= 0 && device_may_wakeup(dev))
+		enable_irq_wake(client->irq);
+
+	return 0;
+}
+
+static int m41t80_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	if (client->irq >= 0 && device_may_wakeup(dev))
+		disable_irq_wake(client->irq);
+
+	return 0;
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(m41t80_pm, m41t80_suspend, m41t80_resume);
 
 static ssize_t flags_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
@@ -829,10 +853,9 @@ static int m41t80_probe(struct i2c_client *client,
 		return rc;
 	}
 
-	rc = devm_add_action(&client->dev, m41t80_remove_sysfs_group,
-			     &client->dev);
+	rc = devm_add_action_or_reset(&client->dev, m41t80_remove_sysfs_group,
+				      &client->dev);
 	if (rc) {
-		m41t80_remove_sysfs_group(&client->dev);
 		dev_err(&client->dev,
 			"Failed to add sysfs cleanup action: %d\n", rc);
 		return rc;
@@ -871,6 +894,7 @@ static int m41t80_remove(struct i2c_client *client)
 static struct i2c_driver m41t80_driver = {
 	.driver = {
 		.name = "rtc-m41t80",
+		.pm = &m41t80_pm,
 	},
 	.probe = m41t80_probe,
 	.remove = m41t80_remove,

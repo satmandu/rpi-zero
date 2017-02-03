@@ -141,6 +141,9 @@ static void *vb2_dc_alloc(struct device *dev, unsigned long attrs,
 {
 	struct vb2_dc_buf *buf;
 
+	if (WARN_ON(!dev))
+		return ERR_PTR(-EINVAL);
+
 	buf = kzalloc(sizeof *buf, GFP_KERNEL);
 	if (!buf)
 		return ERR_PTR(-ENOMEM);
@@ -493,6 +496,9 @@ static void *vb2_dc_get_userptr(struct device *dev, unsigned long vaddr,
 		return ERR_PTR(-EINVAL);
 	}
 
+	if (WARN_ON(!dev))
+		return ERR_PTR(-EINVAL);
+
 	buf = kzalloc(sizeof *buf, GFP_KERNEL);
 	if (!buf)
 		return ERR_PTR(-ENOMEM);
@@ -673,6 +679,9 @@ static void *vb2_dc_attach_dmabuf(struct device *dev, struct dma_buf *dbuf,
 	if (dbuf->size < size)
 		return ERR_PTR(-EFAULT);
 
+	if (WARN_ON(!dev))
+		return ERR_PTR(-EINVAL);
+
 	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
 	if (!buf)
 		return ERR_PTR(-ENOMEM);
@@ -743,7 +752,7 @@ EXPORT_SYMBOL_GPL(vb2_dma_contig_memops);
 int vb2_dma_contig_set_max_seg_size(struct device *dev, unsigned int size)
 {
 	if (!dev->dma_parms) {
-		dev->dma_parms = kzalloc(sizeof(dev->dma_parms), GFP_KERNEL);
+		dev->dma_parms = kzalloc(sizeof(*dev->dma_parms), GFP_KERNEL);
 		if (!dev->dma_parms)
 			return -ENOMEM;
 	}

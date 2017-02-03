@@ -162,7 +162,7 @@ static int uhdlc_init(struct ucc_hdlc_private *priv)
 				ALIGNMENT_OF_UCC_HDLC_PRAM);
 
 	if (priv->ucc_pram_offset < 0) {
-		dev_err(priv->dev, "Can not allocate MURAM for hdlc prameter.\n");
+		dev_err(priv->dev, "Can not allocate MURAM for hdlc parameter.\n");
 		ret = -ENOMEM;
 		goto free_tx_bd;
 	}
@@ -295,11 +295,11 @@ free_ucc_pram:
 	qe_muram_free(priv->ucc_pram_offset);
 free_tx_bd:
 	dma_free_coherent(priv->dev,
-			  TX_BD_RING_LEN * sizeof(struct qe_bd),
+			  TX_BD_RING_LEN * sizeof(struct qe_bd *),
 			  priv->tx_bd_base, priv->dma_tx_bd);
 free_rx_bd:
 	dma_free_coherent(priv->dev,
-			  RX_BD_RING_LEN * sizeof(struct qe_bd),
+			  RX_BD_RING_LEN * sizeof(struct qe_bd *),
 			  priv->rx_bd_base, priv->dma_rx_bd);
 free_uccf:
 	ucc_fast_free(priv->uccf);
@@ -688,7 +688,7 @@ static void uhdlc_memclean(struct ucc_hdlc_private *priv)
 
 	if (priv->rx_bd_base) {
 		dma_free_coherent(priv->dev,
-				  RX_BD_RING_LEN * sizeof(struct qe_bd),
+				  RX_BD_RING_LEN * sizeof(struct qe_bd *),
 				  priv->rx_bd_base, priv->dma_rx_bd);
 
 		priv->rx_bd_base = NULL;
@@ -697,7 +697,7 @@ static void uhdlc_memclean(struct ucc_hdlc_private *priv)
 
 	if (priv->tx_bd_base) {
 		dma_free_coherent(priv->dev,
-				  TX_BD_RING_LEN * sizeof(struct qe_bd),
+				  TX_BD_RING_LEN * sizeof(struct qe_bd *),
 				  priv->tx_bd_base, priv->dma_tx_bd);
 
 		priv->tx_bd_base = NULL;
@@ -862,7 +862,7 @@ static int uhdlc_suspend(struct device *dev)
 static int uhdlc_resume(struct device *dev)
 {
 	struct ucc_hdlc_private *priv = dev_get_drvdata(dev);
-	struct ucc_tdm *utdm = priv->utdm;
+	struct ucc_tdm *utdm;
 	struct ucc_tdm_info *ut_info;
 	struct ucc_fast __iomem *uf_regs;
 	struct ucc_fast_private *uccf;
@@ -877,6 +877,7 @@ static int uhdlc_resume(struct device *dev)
 	if (!netif_running(priv->ndev))
 		return 0;
 
+	utdm = priv->utdm;
 	ut_info = priv->ut_info;
 	uf_info = &ut_info->uf_info;
 	uf_regs = priv->uf_regs;
@@ -991,7 +992,6 @@ static const struct dev_pm_ops uhdlc_pm_ops = {
 static const struct net_device_ops uhdlc_ops = {
 	.ndo_open       = uhdlc_open,
 	.ndo_stop       = uhdlc_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = uhdlc_ioctl,
 };
@@ -1168,22 +1168,10 @@ static struct platform_driver ucc_hdlc_driver = {
 	.probe	= ucc_hdlc_probe,
 	.remove	= ucc_hdlc_remove,
 	.driver	= {
-		.owner		= THIS_MODULE,
 		.name		= DRV_NAME,
 		.pm		= HDLC_PM_OPS,
 		.of_match_table	= fsl_ucc_hdlc_of_match,
 	},
 };
 
-static int __init ucc_hdlc_init(void)
-{
-	return platform_driver_register(&ucc_hdlc_driver);
-}
-
-static void __exit ucc_hdlc_exit(void)
-{
-	platform_driver_unregister(&ucc_hdlc_driver);
-}
-
-module_init(ucc_hdlc_init);
-module_exit(ucc_hdlc_exit);
+module_platform_driver(ucc_hdlc_driver);

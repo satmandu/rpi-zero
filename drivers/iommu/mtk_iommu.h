@@ -34,12 +34,6 @@ struct mtk_iommu_suspend_reg {
 	u32				int_main_control;
 };
 
-struct mtk_iommu_client_priv {
-	struct list_head		client;
-	unsigned int			mtk_m4u_id;
-	struct device			*m4udev;
-};
-
 struct mtk_iommu_domain;
 
 struct mtk_iommu_data {
@@ -55,19 +49,24 @@ struct mtk_iommu_data {
 	bool                            enable_4GB;
 };
 
-static int compare_of(struct device *dev, void *data)
+static inline int compare_of(struct device *dev, void *data)
 {
 	return dev->of_node == data;
 }
 
-static int mtk_iommu_bind(struct device *dev)
+static inline void release_of(struct device *dev, void *data)
+{
+	of_node_put(data);
+}
+
+static inline int mtk_iommu_bind(struct device *dev)
 {
 	struct mtk_iommu_data *data = dev_get_drvdata(dev);
 
 	return component_bind_all(dev, &data->smi_imu);
 }
 
-static void mtk_iommu_unbind(struct device *dev)
+static inline void mtk_iommu_unbind(struct device *dev)
 {
 	struct mtk_iommu_data *data = dev_get_drvdata(dev);
 

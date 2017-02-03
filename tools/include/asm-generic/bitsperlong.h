@@ -10,8 +10,7 @@
 #endif
 
 #if BITS_PER_LONG != __BITS_PER_LONG
-#undef __BITS_PER_LONG
-#define __BITS_PER_LONG	BITS_PER_LONG
+#error Inconsistent word size. Check asm/bitsperlong.h
 #endif
 
 #ifndef BITS_PER_LONG_LONG

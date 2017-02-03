@@ -49,182 +49,233 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 / {
-    model = "Banana Pi BPI-M1-Plus";
-    compatible = "sinovoip,bpi-m1-plus", "allwinner,sun7i-a20";
+	model = "Banana Pi BPI-M1-Plus";
+	compatible = "sinovoip,bpi-m1-plus", "allwinner,sun7i-a20";
 
-    aliases {
-        serial0 = &uart0;
-    };
+	aliases {
+		serial0 = &uart0;
+	};
 
-    chosen {
-        stdout-path = "serial0:115200n8";
-    };
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
 
-    leds {
-        compatible = "gpio-leds";
-        pinctrl-names = "default";
-        pinctrl-0 = <&led_pins_bananapi>;
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&led_pins_bpi_m1p>;
 
-        green {
-            label = "bananapi-m1-plus:green:usr";
-            gpios = <&pio 7 24 GPIO_ACTIVE_HIGH>;
-        };
+		green {
+			label = "bananapi-m1-plus:green:usr";
+			gpios = <&pio 7 24 GPIO_ACTIVE_HIGH>;
+		};
 
-        red {
-            label = "bananapi-m1-plus:red:usr";
-            gpios = <&pio 7 25 GPIO_ACTIVE_HIGH>;
-            linux,default-trigger = "default-on";
-        };
+		pwr {
+			label = "bananapi-m1-plus:pwr:usr";
+			gpios = <&pio 7 25 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+		};
+	};
 
-    };
+	mmc3_pwrseq: mmc3_pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		pinctrl-names = "default";
+		pinctrl-0 = <&mmc3_pwrseq_pin_bpi_m1p>;
+		reset-gpios = <&pio 7 22 GPIO_ACTIVE_LOW>; /* PH22 WL-PMU-EN */
+	};
 
-    mmc3_pwrseq: mmc3_pwrseq {
-        compatible = "mmc-pwrseq-simple";
-        pinctrl-names = "default";
-        pinctrl-0 = <&mmc3_pwrseq_pin_bananapim1plus>;
-        reset-gpios = <&pio 7 22 GPIO_ACTIVE_LOW>; /* PH22 WL-PMU-EN */
-    };
-
-    reg_gmac_3v3: gmac-3v3 {
-        compatible = "regulator-fixed";
-        pinctrl-names = "default";
-        pinctrl-0 = <&gmac_power_pin_bananapi>;
-        regulator-name = "gmac-3v3";
-        regulator-min-microvolt = <3300000>;
-        regulator-max-microvolt = <3300000>;
-        startup-delay-us = <100000>;
-        enable-active-high;
-        gpio = <&pio 7 23 GPIO_ACTIVE_HIGH>;
-    };
+	reg_gmac_3v3: gmac-3v3 {
+		compatible = "regulator-fixed";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gmac_power_pin_bpi_m1p>;
+		regulator-name = "gmac-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		startup-delay-us = <100000>;
+		enable-active-high;
+		gpio = <&pio 7 23 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 &ahci {
-    status = "okay";
+	status = "okay";
 };
 
 &codec {
-    status = "okay";
+	status = "okay";
+};
+
+&cpu0 {
+	cpu-supply = <&reg_dcdc2>;
 };
 
 &ehci0 {
-    status = "okay";
+	status = "okay";
 };
 
 &ehci1 {
-    status = "okay";
+	status = "okay";
 };
 
 &gmac {
-    pinctrl-names = "default";
-    pinctrl-0 = <&gmac_pins_rgmii_a>;
-    phy = <&phy1>;
-    phy-mode = "rgmii";
-    phy-supply = <&reg_gmac_3v3>;
-    status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&gmac_pins_rgmii_a>;
+	phy = <&phy1>;
+	phy-mode = "rgmii";
+	phy-supply = <&reg_gmac_3v3>;
+	status = "okay";
 
-    phy1: ethernet-phy@1 {
-        reg = <1>;
-    };
+	phy1: ethernet-phy@1 {
+		reg = <1>;
+	};
 };
 
 &i2c0 {
-    pinctrl-names = "default";
-    pinctrl-0 = <&i2c0_pins_a>;
-    status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
 
-    axp209: pmic@34 {
-        compatible = "x-powers,axp209";
-        reg = <0x34>;
-        interrupt-parent = <&nmi_intc>;
-        interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
-
-        interrupt-controller;
-        #interrupt-cells = <1>;
-    };
+	axp209: pmic@34 {
+		reg = <0x34>;
+		interrupt-parent = <&nmi_intc>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+	};
 };
 
+#include "axp209.dtsi"
+
 &ir0 {
-    pinctrl-names = "default";
-    pinctrl-0 = <&ir0_rx_pins_a>;
-    status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&ir0_rx_pins_a>;
+	status = "okay";
 };
 
 &mmc0 {
-    pinctrl-names = "default";
-    pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin_bananapi>;
-    vmmc-supply = <&reg_vcc3v3>;
-    bus-width = <4>;
-    cd-gpios = <&pio 7 10 GPIO_ACTIVE_HIGH>; /* PH10 */
-    cd-inverted;
-    status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin_bpi_m1p>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	cd-gpios = <&pio 7 10 GPIO_ACTIVE_HIGH>; /* PH10 */
+	cd-inverted;
+	status = "okay";
 };
 
 &mmc3 {
-    #address-cells = <1>;
-    #size-cells = <0>;
-    pinctrl-names = "default";
-    pinctrl-0 = <&mmc3_pins_a>;
-    vmmc-supply = <&reg_vcc3v3>;
-    mmc-pwrseq = <&mmc3_pwrseq>;
-    bus-width = <4>;
-    non-removable;
-    enable-sdio-wakeup;
-    status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc3_pins_a>;
+	vmmc-supply = <&reg_vcc3v3>;
+	mmc-pwrseq = <&mmc3_pwrseq>;
+	bus-width = <4>;
+	non-removable;
+	wakeup-source;
+	status = "okay";
 
-    brcmf: bcrmf@1 {
-        reg = <1>;
-        compatible = "brcm,bcm4329-fmac";
-        interrupt-parent = <&pio>;
-        interrupts = <7 15 IRQ_TYPE_LEVEL_LOW>;
-        interrupt-names = "host-wake";
-    };
+	brcmf: bcrmf@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+		interrupt-parent = <&pio>;
+		interrupts = <7 15 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "host-wake";
+	};
 };
 
 &mmc3_pins_a {
-    /* AP6210 requires pull-up */
-    allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
+	/* AP6210 requires pull-up */
+	allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
 };
 
 &ohci0 {
-    status = "okay";
+	status = "okay";
 };
 
 &ohci1 {
-    status = "okay";
+	status = "okay";
+};
+
+&otg_sram {
+	status = "okay";
 };
 
 &pio {
-    gmac_power_pin_bananapi: gmac_power_pin@0 {
-        allwinner,pins = "PH23";
-        allwinner,function = "gpio_out";
-        allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-        allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
-    };
+	gmac_power_pin_bpi_m1p: gmac_power_pin@0 {
+		allwinner,pins = "PH23";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
 
-    led_pins_bananapi: led_pins@0 {
-        allwinner,pins = "PH24", "PG2";
-        allwinner,function = "gpio_out";
-        allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-        allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
-    };
+	led_pins_bpi_m1p: led_pins@0 {
+		allwinner,pins = "PH24", "PH25";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
 
-    mmc0_cd_pin_bananapi: mmc0_cd_pin@0 {
-        allwinner,pins = "PH10";
-        allwinner,function = "gpio_in";
-        allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-        allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
-    };
+	mmc0_cd_pin_bpi_m1p: mmc0_cd_pin@0 {
+		allwinner,pins = "PH10";
+		allwinner,function = "gpio_in";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
+	};
 
-    mmc3_pwrseq_pin_bananapim1plus: mmc3_pwrseq_pin@0 {
-        allwinner,pins = "PH22";
-        allwinner,function = "gpio_out";
-        allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-        allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
-    };
+	mmc3_pwrseq_pin_bpi_m1p: mmc3_pwrseq_pin@0 {
+		allwinner,pins = "PH22";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+};
+
+&reg_dcdc2 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1400000>;
+	regulator-name = "vdd-cpu";
+};
+
+&reg_dcdc3 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1400000>;
+	regulator-name = "vdd-int-dll";
+};
+
+&reg_ldo1 {
+	regulator-name = "vdd-rtc";
+};
+
+&reg_ldo2 {
+	regulator-always-on;
+	regulator-min-microvolt = <3000000>;
+	regulator-max-microvolt = <3000000>;
+	regulator-name = "avcc";
+};
+
+&reg_usb0_vbus {
+	status = "okay";
 };
 
 &uart0 {
-    pinctrl-names = "default";
-    pinctrl-0 = <&uart0_pins_a>;
-    status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins_a>;
+	status = "okay";
+};
+
+&usb_otg {
+	dr_mode = "otg";
+	status = "okay";
+};
+
+&usb_power_supply {
+	status = "okay";
+};
+
+&usbphy {
+	usb0_id_det-gpios = <&pio 7 4 GPIO_ACTIVE_HIGH>; /* PH4 */
+	usb0_vbus_power-supply = <&usb_power_supply>;
+	usb0_vbus-supply = <&reg_usb0_vbus>;
+	/* VBUS on usb host ports are tied to DC5V and therefore always on */
+	status = "okay";
 };

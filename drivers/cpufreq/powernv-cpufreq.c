@@ -42,6 +42,10 @@
 #define PMSR_PSAFE_ENABLE	(1UL << 30)
 #define PMSR_SPR_EM_DISABLE	(1UL << 31)
 #define PMSR_MAX(x)		((x >> 32) & 0xFF)
+#define LPSTATE_SHIFT		48
+#define GPSTATE_SHIFT		56
+#define GET_LPSTATE(x)		(((x) >> LPSTATE_SHIFT) & 0xFF)
+#define GET_GPSTATE(x)		(((x) >> GPSTATE_SHIFT) & 0xFF)
 
 #define MAX_RAMP_DOWN_TIME				5120
 /*
@@ -145,11 +149,30 @@ static struct powernv_pstate_info {
 /* Use following macros for conversions between pstate_id and index */
 static inline int idx_to_pstate(unsigned int i)
 {
+	if (unlikely(i >= powernv_pstate_info.nr_pstates)) {
+		pr_warn_once("index %u is out of bound\n", i);
+		return powernv_freqs[powernv_pstate_info.nominal].driver_data;
+	}
+
 	return powernv_freqs[i].driver_data;
 }
 
 static inline unsigned int pstate_to_idx(int pstate)
 {
+	int min = powernv_freqs[powernv_pstate_info.min].driver_data;
+	int max = powernv_freqs[powernv_pstate_info.max].driver_data;
+
+	if (min > 0) {
+		if (unlikely((pstate < max) || (pstate > min))) {
+			pr_warn_once("pstate %d is out of bound\n", pstate);
+			return powernv_pstate_info.nominal;
+		}
+	} else {
+		if (unlikely((pstate > max) || (pstate < min))) {
+			pr_warn_once("pstate %d is out of bound\n", pstate);
+			return powernv_pstate_info.nominal;
+		}
+	}
 	/*
 	 * abs() is deliberately used so that is works with
 	 * both monotonically increasing and decreasing
@@ -573,7 +596,8 @@ void gpstate_timer_handler(unsigned long data)
 {
 	struct cpufreq_policy *policy = (struct cpufreq_policy *)data;
 	struct global_pstate_info *gpstates = policy->driver_data;
-	int gpstate_idx;
+	int gpstate_idx, lpstate_idx;
+	unsigned long val;
 	unsigned int time_diff = jiffies_to_msecs(jiffies)
 					- gpstates->last_sampled_time;
 	struct powernv_smp_call_data freq_data;
@@ -581,31 +605,43 @@ void gpstate_timer_handler(unsigned long data)
 	if (!spin_trylock(&gpstates->gpstate_lock))
 		return;
 
+	/*
+	 * If PMCR was last updated was using fast_swtich then
+	 * We may have wrong in gpstate->last_lpstate_idx
+	 * value. Hence, read from PMCR to get correct data.
+	 */
+	val = get_pmspr(SPRN_PMCR);
+	freq_data.gpstate_id = (s8)GET_GPSTATE(val);
+	freq_data.pstate_id = (s8)GET_LPSTATE(val);
+	if (freq_data.gpstate_id  == freq_data.pstate_id) {
+		reset_gpstates(policy);
+		spin_unlock(&gpstates->gpstate_lock);
+		return;
+	}
+
 	gpstates->last_sampled_time += time_diff;
 	gpstates->elapsed_time += time_diff;
-	freq_data.pstate_id = idx_to_pstate(gpstates->last_lpstate_idx);
 
-	if ((gpstates->last_gpstate_idx == gpstates->last_lpstate_idx) ||
-	    (gpstates->elapsed_time > MAX_RAMP_DOWN_TIME)) {
+	if (gpstates->elapsed_time > MAX_RAMP_DOWN_TIME) {
 		gpstate_idx = pstate_to_idx(freq_data.pstate_id);
+		lpstate_idx = gpstate_idx;
 		reset_gpstates(policy);
 		gpstates->highest_lpstate_idx = gpstate_idx;
 	} else {
+		lpstate_idx = pstate_to_idx(freq_data.pstate_id);
 		gpstate_idx = calc_global_pstate(gpstates->elapsed_time,
 						 gpstates->highest_lpstate_idx,
-						 freq_data.pstate_id);
+						 lpstate_idx);
 	}
-
+	freq_data.gpstate_id = idx_to_pstate(gpstate_idx);
+	gpstates->last_gpstate_idx = gpstate_idx;
+	gpstates->last_lpstate_idx = lpstate_idx;
 	/*
 	 * If local pstate is equal to global pstate, rampdown is over
 	 * So timer is not required to be queued.
 	 */
 	if (gpstate_idx != gpstates->last_lpstate_idx)
 		queue_gpstate_timer(gpstates);
-
-	freq_data.gpstate_id = idx_to_pstate(gpstate_idx);
-	gpstates->last_gpstate_idx = pstate_to_idx(freq_data.gpstate_id);
-	gpstates->last_lpstate_idx = pstate_to_idx(freq_data.pstate_id);
 
 	spin_unlock(&gpstates->gpstate_lock);
 
@@ -628,8 +664,14 @@ static int powernv_cpufreq_target_index(struct cpufreq_policy *policy,
 	if (unlikely(rebooting) && new_index != get_nominal_index())
 		return 0;
 
-	if (!throttled)
+	if (!throttled) {
+		/* we don't want to be preempted while
+		 * checking if the CPU frequency has been throttled
+		 */
+		preempt_disable();
 		powernv_cpufreq_throttle_check(NULL);
+		preempt_enable();
+	}
 
 	cur_msec = jiffies_to_msecs(get_jiffies_64());
 
@@ -733,9 +775,12 @@ static int powernv_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	spin_lock_init(&gpstates->gpstate_lock);
 	ret = cpufreq_table_validate_and_show(policy, powernv_freqs);
 
-	if (ret < 0)
+	if (ret < 0) {
 		kfree(policy->driver_data);
+		return ret;
+	}
 
+	policy->fast_switch_possible = true;
 	return ret;
 }
 
@@ -878,6 +923,20 @@ static void powernv_cpufreq_stop_cpu(struct cpufreq_policy *policy)
 	del_timer_sync(&gpstates->timer);
 }
 
+static unsigned int powernv_fast_switch(struct cpufreq_policy *policy,
+					unsigned int target_freq)
+{
+	int index;
+	struct powernv_smp_call_data freq_data;
+
+	index = cpufreq_table_find_index_dl(policy, target_freq);
+	freq_data.pstate_id = powernv_freqs[index].driver_data;
+	freq_data.gpstate_id = powernv_freqs[index].driver_data;
+	set_pstate(&freq_data);
+
+	return powernv_freqs[index].frequency;
+}
+
 static struct cpufreq_driver powernv_cpufreq_driver = {
 	.name		= "powernv-cpufreq",
 	.flags		= CPUFREQ_CONST_LOOPS,
@@ -885,6 +944,7 @@ static struct cpufreq_driver powernv_cpufreq_driver = {
 	.exit		= powernv_cpufreq_cpu_exit,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= powernv_cpufreq_target_index,
+	.fast_switch	= powernv_fast_switch,
 	.get		= powernv_cpufreq_get,
 	.stop_cpu	= powernv_cpufreq_stop_cpu,
 	.attr		= powernv_cpu_freq_attr,

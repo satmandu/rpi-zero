@@ -35,7 +35,6 @@
  */
 #include <linux/sched.h>
 #include <linux/debugfs.h>
-#include <linux/kconfig.h>
 #include <linux/percpu-defs.h>
 #include <linux/perf_event.h>
 
@@ -43,7 +42,7 @@
 #include <asm/inst.h>
 #include <asm/ptrace.h>
 #include <asm/signal.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <asm/cpu-info.h>
 #include <asm/processor.h>
@@ -434,8 +433,8 @@ static int microMIPS32_to_MIPS32(union mips_instruction *insn_ptr)
  * a single subroutine should be used across both
  * modules.
  */
-static int isBranchInstr(struct pt_regs *regs, struct mm_decoded_insn dec_insn,
-			 unsigned long *contpc)
+int isBranchInstr(struct pt_regs *regs, struct mm_decoded_insn dec_insn,
+		  unsigned long *contpc)
 {
 	union mips_instruction insn = (union mips_instruction)dec_insn.insn;
 	unsigned int fcr31;
@@ -1268,7 +1267,7 @@ branch_common:
 						 * instruction in the dslot.
 						 */
 						sig = mips_dsemul(xcp, ir,
-								  contpc);
+								  bcpc, contpc);
 						if (sig < 0)
 							break;
 						if (sig)
@@ -1323,7 +1322,7 @@ branch_common:
 				 * Single step the non-cp1
 				 * instruction in the dslot
 				 */
-				sig = mips_dsemul(xcp, ir, contpc);
+				sig = mips_dsemul(xcp, ir, bcpc, contpc);
 				if (sig < 0)
 					break;
 				if (sig)

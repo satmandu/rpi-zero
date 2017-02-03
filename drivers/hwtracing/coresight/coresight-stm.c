@@ -198,7 +198,7 @@ static void stm_enable_hw(struct stm_drvdata *drvdata)
 }
 
 static int stm_enable(struct coresight_device *csdev,
-		      struct perf_event_attr *attr, u32 mode)
+		      struct perf_event *event, u32 mode)
 {
 	u32 val;
 	struct stm_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
@@ -260,7 +260,8 @@ static void stm_disable_hw(struct stm_drvdata *drvdata)
 		stm_hwevent_disable_hw(drvdata);
 }
 
-static void stm_disable(struct coresight_device *csdev)
+static void stm_disable(struct coresight_device *csdev,
+			struct perf_event *event)
 {
 	struct stm_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 
@@ -355,7 +356,7 @@ static void stm_generic_unlink(struct stm_data *stm_data,
 	if (!drvdata || !drvdata->csdev)
 		return;
 
-	stm_disable(drvdata->csdev);
+	stm_disable(drvdata->csdev, NULL);
 }
 
 static phys_addr_t
@@ -405,7 +406,7 @@ static long stm_generic_set_options(struct stm_data *stm_data,
 	return 0;
 }
 
-static ssize_t stm_generic_packet(struct stm_data *stm_data,
+static ssize_t notrace stm_generic_packet(struct stm_data *stm_data,
 				  unsigned int master,
 				  unsigned int channel,
 				  unsigned int packet,
@@ -418,10 +419,10 @@ static ssize_t stm_generic_packet(struct stm_data *stm_data,
 						   struct stm_drvdata, stm);
 
 	if (!(drvdata && local_read(&drvdata->mode)))
-		return 0;
+		return -EACCES;
 
 	if (channel >= drvdata->numsp)
-		return 0;
+		return -EINVAL;
 
 	ch_addr = (unsigned long)stm_channel_addr(drvdata, channel);
 
@@ -635,7 +636,7 @@ static ssize_t traceid_store(struct device *dev,
 static DEVICE_ATTR_RW(traceid);
 
 #define coresight_stm_simple_func(name, offset)	\
-	coresight_simple_func(struct stm_drvdata, name, offset)
+	coresight_simple_func(struct stm_drvdata, NULL, name, offset)
 
 coresight_stm_simple_func(tcsr, STMTCSR);
 coresight_stm_simple_func(tsfreqr, STMTSFREQR);
@@ -918,6 +919,11 @@ static struct amba_id stm_ids[] = {
 		.id     = 0x0003b962,
 		.mask   = 0x0003ffff,
 		.data	= "STM32",
+	},
+	{
+		.id	= 0x0003b963,
+		.mask	= 0x0003ffff,
+		.data	= "STM500",
 	},
 	{ 0, 0},
 };

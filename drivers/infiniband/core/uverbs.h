@@ -116,6 +116,7 @@ struct ib_uverbs_event_file {
 struct ib_uverbs_file {
 	struct kref				ref;
 	struct mutex				mutex;
+	struct mutex                            cleanup_mutex; /* protect cleanup */
 	struct ib_uverbs_device		       *device;
 	struct ib_ucontext		       *ucontext;
 	struct ib_event_handler			event_handler;
@@ -288,5 +289,6 @@ IB_UVERBS_DECLARE_EX_CMD(modify_wq);
 IB_UVERBS_DECLARE_EX_CMD(destroy_wq);
 IB_UVERBS_DECLARE_EX_CMD(create_rwq_ind_table);
 IB_UVERBS_DECLARE_EX_CMD(destroy_rwq_ind_table);
+IB_UVERBS_DECLARE_EX_CMD(modify_qp);
 
 #endif /* UVERBS_H */

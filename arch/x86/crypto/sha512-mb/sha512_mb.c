@@ -117,7 +117,7 @@ inline void sha512_init_digest(uint64_t *digest)
 }
 
 inline uint32_t sha512_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2],
-			 uint32_t total_len)
+			 uint64_t total_len)
 {
 	uint32_t i = total_len & (SHA512_BLOCK_SIZE - 1);
 
@@ -497,10 +497,10 @@ static int sha_complete_job(struct mcryptd_hash_request_ctx *rctx,
 
 			req = cast_mcryptd_ctx_to_req(req_ctx);
 			if (irqs_disabled())
-				rctx->complete(&req->base, ret);
+				req_ctx->complete(&req->base, ret);
 			else {
 				local_bh_disable();
-				rctx->complete(&req->base, ret);
+				req_ctx->complete(&req->base, ret);
 				local_bh_enable();
 			}
 		}

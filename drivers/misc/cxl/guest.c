@@ -887,7 +887,7 @@ static void afu_handle_errstate(struct work_struct *work)
 	    afu_guest->previous_state == H_STATE_PERM_UNAVAILABLE)
 		return;
 
-	if (afu_guest->handle_err == true)
+	if (afu_guest->handle_err)
 		schedule_delayed_work(&afu_guest->work_err,
 				      msecs_to_jiffies(3000));
 }
@@ -1055,16 +1055,18 @@ static void free_adapter(struct cxl *adapter)
 	struct irq_avail *cur;
 	int i;
 
-	if (adapter->guest->irq_avail) {
-		for (i = 0; i < adapter->guest->irq_nranges; i++) {
-			cur = &adapter->guest->irq_avail[i];
-			kfree(cur->bitmap);
+	if (adapter->guest) {
+		if (adapter->guest->irq_avail) {
+			for (i = 0; i < adapter->guest->irq_nranges; i++) {
+				cur = &adapter->guest->irq_avail[i];
+				kfree(cur->bitmap);
+			}
+			kfree(adapter->guest->irq_avail);
 		}
-		kfree(adapter->guest->irq_avail);
+		kfree(adapter->guest->status);
+		kfree(adapter->guest);
 	}
-	kfree(adapter->guest->status);
 	cxl_remove_adapter_nr(adapter);
-	kfree(adapter->guest);
 	kfree(adapter);
 }
 
@@ -1149,6 +1151,9 @@ struct cxl *cxl_guest_init_adapter(struct device_node *np, struct platform_devic
 
 	if ((rc = cxl_sysfs_adapter_add(adapter)))
 		goto err_put1;
+
+	/* release the context lock as the adapter is configured */
+	cxl_adapter_context_unlock(adapter);
 
 	return adapter;
 

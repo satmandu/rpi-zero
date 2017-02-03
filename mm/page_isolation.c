@@ -55,7 +55,7 @@ static int set_migratetype_isolate(struct page *page,
 		ret = 0;
 
 	/*
-	 * immobile means "not-on-lru" paes. If immobile is larger than
+	 * immobile means "not-on-lru" pages. If immobile is larger than
 	 * removable-by-driver pages reported by notifier, we'll fail.
 	 */
 
@@ -280,20 +280,23 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 	return pfn < end_pfn ? -EBUSY : 0;
 }
 
-struct page *alloc_migrate_target(struct page *page, unsigned long nid,
+struct page *alloc_migrate_target(struct page *page, unsigned long private,
 				  int **resultp)
 {
+	gfp_t gfp_mask = GFP_USER | __GFP_MOVABLE;
+
 	/*
-	 * hugeTLB: allocate a destination page from a nearest neighbor node,
+	 * TODO: allocate a destination hugepage from a nearest neighbor node,
 	 * accordance with memory policy of the user process if possible. For
 	 * now as a simple work-around, we use the next node for destination.
-	 * Normal page: use prefer mempolicy for destination if called by
-	 * hotplug, use default mempolicy for destination if called by cma.
 	 */
 	if (PageHuge(page))
 		return alloc_huge_page_node(page_hstate(compound_head(page)),
 					    next_node_in(page_to_nid(page),
 							 node_online_map));
-	else
-		return alloc_pages_node(nid, GFP_HIGHUSER_MOVABLE, 0);
+
+	if (PageHighMem(page))
+		gfp_mask |= __GFP_HIGHMEM;
+
+	return alloc_page(gfp_mask);
 }

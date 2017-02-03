@@ -20,8 +20,11 @@
 #include <linux/kvm.h>
 #include <linux/irqreturn.h>
 #include <linux/spinlock.h>
+#include <linux/static_key.h>
 #include <linux/types.h>
 #include <kvm/iodev.h>
+#include <linux/list.h>
+#include <linux/jump_label.h>
 
 #define VGIC_V3_MAX_CPUS	255
 #define VGIC_V2_MAX_CPUS	8
@@ -33,6 +36,7 @@
 #define VGIC_MAX_SPI		1019
 #define VGIC_MAX_RESERVED	1023
 #define VGIC_MIN_LPI		8192
+#define KVM_IRQCHIP_NUM_PINS	(1020 - 32)
 
 enum vgic_type {
 	VGIC_V2,		/* Good ol' GICv2 */
@@ -46,6 +50,9 @@ struct vgic_global {
 
 	/* Physical address of vgic virtual cpu interface */
 	phys_addr_t		vcpu_base;
+
+	/* GICV mapping */
+	void __iomem		*vcpu_base_va;
 
 	/* virtual control interface mapping */
 	void __iomem		*vctrl_base;
@@ -61,6 +68,9 @@ struct vgic_global {
 
 	/* Only needed for the legacy KVM_CREATE_IRQCHIP */
 	bool			can_emulate_gicv2;
+
+	/* GIC system register CPU interface */
+	struct static_key_false gicv3_cpuif;
 };
 
 extern struct vgic_global kvm_vgic_global_state;
@@ -76,6 +86,7 @@ enum vgic_irq_config {
 
 struct vgic_irq {
 	spinlock_t irq_lock;		/* Protects the content of the struct */
+	struct list_head lpi_list;	/* Used to link all LPIs together */
 	struct list_head ap_list;
 
 	struct kvm_vcpu *vcpu;		/* SGIs and PPIs: The VCPU
@@ -96,6 +107,7 @@ struct vgic_irq {
 	bool active;			/* not used for LPIs */
 	bool enabled;
 	bool hw;			/* Tied to HW IRQ */
+	struct kref refcount;		/* Used for LPIs */
 	u32 hwintid;			/* HW INTID number */
 	union {
 		u8 targets;			/* GICv2 target VCPUs mask */
@@ -107,13 +119,50 @@ struct vgic_irq {
 };
 
 struct vgic_register_region;
+struct vgic_its;
+
+enum iodev_type {
+	IODEV_CPUIF,
+	IODEV_DIST,
+	IODEV_REDIST,
+	IODEV_ITS
+};
 
 struct vgic_io_device {
 	gpa_t base_addr;
-	struct kvm_vcpu *redist_vcpu;
+	union {
+		struct kvm_vcpu *redist_vcpu;
+		struct vgic_its *its;
+	};
 	const struct vgic_register_region *regions;
+	enum iodev_type iodev_type;
 	int nr_regions;
 	struct kvm_io_device dev;
+};
+
+struct vgic_its {
+	/* The base address of the ITS control register frame */
+	gpa_t			vgic_its_base;
+
+	bool			enabled;
+	bool			initialized;
+	struct vgic_io_device	iodev;
+	struct kvm_device	*dev;
+
+	/* These registers correspond to GITS_BASER{0,1} */
+	u64			baser_device_table;
+	u64			baser_coll_table;
+
+	/* Protects the command queue */
+	struct mutex		cmd_lock;
+	u64			cbaser;
+	u32			creadr;
+	u32			cwriter;
+
+	/* Protects the device and collection lists */
+	struct mutex		its_lock;
+	struct list_head	device_list;
+	struct list_head	collection_list;
 };
 
 struct vgic_dist {
@@ -123,6 +172,9 @@ struct vgic_dist {
 
 	/* vGIC model the kernel emulates for the guest (GICv2 or GICv3) */
 	u32			vgic_model;
+
+	/* Do injected MSIs require an additional device ID? */
+	bool			msis_require_devid;
 
 	int			nr_spis;
 
@@ -145,7 +197,21 @@ struct vgic_dist {
 	struct vgic_irq		*spis;
 
 	struct vgic_io_device	dist_iodev;
-	struct vgic_io_device	*redist_iodevs;
+
+	bool			has_its;
+
+	/*
+	 * Contains the attributes and gpa of the LPI configuration table.
+	 * Since we report GICR_TYPER.CommonLPIAff as 0b00, we can share
+	 * one address across all redistributors.
+	 * GICv3 spec: 6.1.2 "LPI Configuration tables"
+	 */
+	u64			propbaser;
+
+	/* Protects the lpi_list and the count value below. */
+	spinlock_t		lpi_list_lock;
+	struct list_head	lpi_list_head;
+	int			lpi_list_count;
 };
 
 struct vgic_v2_cpu_if {
@@ -159,7 +225,6 @@ struct vgic_v2_cpu_if {
 };
 
 struct vgic_v3_cpu_if {
-#ifdef CONFIG_KVM_ARM_VGIC_V3
 	u32		vgic_hcr;
 	u32		vgic_vmcr;
 	u32		vgic_sre;	/* Restored only, change ignored */
@@ -169,7 +234,6 @@ struct vgic_v3_cpu_if {
 	u32		vgic_ap0r[4];
 	u32		vgic_ap1r[4];
 	u64		vgic_lr[VGIC_V3_MAX_LRS];
-#endif
 };
 
 struct vgic_cpu {
@@ -193,7 +257,21 @@ struct vgic_cpu {
 	struct list_head ap_list_head;
 
 	u64 live_lrs;
+
+	/*
+	 * Members below are used with GICv3 emulation only and represent
+	 * parts of the redistributor.
+	 */
+	struct vgic_io_device	rd_iodev;
+	struct vgic_io_device	sgi_iodev;
+
+	/* Contains the attributes and gpa of the LPI pending tables. */
+	u64 pendbaser;
+
+	bool lpis_enabled;
 };
+
+extern struct static_key_false vgic_v2_cpuif_trap;
 
 int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write);
 void kvm_vgic_early_init(struct kvm *kvm);
@@ -224,13 +302,7 @@ bool kvm_vcpu_has_pending_irqs(struct kvm_vcpu *vcpu);
 void kvm_vgic_sync_hwstate(struct kvm_vcpu *vcpu);
 void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu);
 
-#ifdef CONFIG_KVM_ARM_VGIC_V3
 void vgic_v3_dispatch_sgi(struct kvm_vcpu *vcpu, u64 reg);
-#else
-static inline void vgic_v3_dispatch_sgi(struct kvm_vcpu *vcpu, u64 reg)
-{
-}
-#endif
 
 /**
  * kvm_vgic_get_max_vcpus - Get the maximum number of VCPUs allowed by HW
@@ -242,5 +314,13 @@ static inline int kvm_vgic_get_max_vcpus(void)
 {
 	return kvm_vgic_global_state.max_gic_vcpus;
 }
+
+int kvm_send_userspace_msi(struct kvm *kvm, struct kvm_msi *msi);
+
+/**
+ * kvm_vgic_setup_default_irq_routing:
+ * Setup a default flat gsi routing table mapping all SPIs
+ */
+int kvm_vgic_setup_default_irq_routing(struct kvm *kvm);
 
 #endif /* __KVM_ARM_VGIC_H */

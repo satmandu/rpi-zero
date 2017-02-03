@@ -42,7 +42,7 @@ static DEFINE_PER_CPU(struct led_trigger_cpu, cpu_trig);
  * @evt: CPU event to be emitted
  *
  * Emit a CPU event on a CPU core, which will trigger a
- * binded LED to turn on or turn off.
+ * bound LED to turn on or turn off.
  */
 void ledtrig_cpu(enum cpu_led_event ledevt)
 {
@@ -92,13 +92,13 @@ static struct syscore_ops ledtrig_cpu_syscore_ops = {
 	.resume		= ledtrig_cpu_syscore_resume,
 };
 
-static int ledtrig_starting_cpu(unsigned int cpu)
+static int ledtrig_online_cpu(unsigned int cpu)
 {
 	ledtrig_cpu(CPU_LED_START);
 	return 0;
 }
 
-static int ledtrig_dying_cpu(unsigned int cpu)
+static int ledtrig_prepare_down_cpu(unsigned int cpu)
 {
 	ledtrig_cpu(CPU_LED_STOP);
 	return 0;
@@ -107,6 +107,7 @@ static int ledtrig_dying_cpu(unsigned int cpu)
 static int __init ledtrig_cpu_init(void)
 {
 	int cpu;
+	int ret;
 
 	/* Supports up to 9999 cpu cores */
 	BUILD_BUG_ON(CONFIG_NR_CPUS > 9999);
@@ -126,12 +127,11 @@ static int __init ledtrig_cpu_init(void)
 
 	register_syscore_ops(&ledtrig_cpu_syscore_ops);
 
-	/*
-	 * FIXME: Why needs this to happen in the interrupt disabled
-	 * low level bringup phase of a cpu?
-	 */
-	cpuhp_setup_state(CPUHP_AP_LEDTRIG_STARTING, "AP_LEDTRIG_STARTING",
-			  ledtrig_starting_cpu, ledtrig_dying_cpu);
+	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "leds/trigger:starting",
+				ledtrig_online_cpu, ledtrig_prepare_down_cpu);
+	if (ret < 0)
+		pr_err("CPU hotplug notifier for ledtrig-cpu could not be registered: %d\n",
+		       ret);
 
 	pr_info("ledtrig-cpu: registered to indicate activity on CPUs\n");
 

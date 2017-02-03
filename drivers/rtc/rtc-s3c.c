@@ -149,12 +149,14 @@ static int s3c_rtc_setfreq(struct s3c_rtc *info, int freq)
 	if (!is_power_of_2(freq))
 		return -EINVAL;
 
+	s3c_rtc_enable_clk(info);
 	spin_lock_irq(&info->pie_lock);
 
 	if (info->data->set_freq)
 		info->data->set_freq(info, freq);
 
 	spin_unlock_irq(&info->pie_lock);
+	s3c_rtc_disable_clk(info);
 
 	return 0;
 }
@@ -564,8 +566,6 @@ static int s3c_rtc_probe(struct platform_device *pdev)
 		info->data->select_tick_clk(info);
 
 	s3c_rtc_setfreq(info, 1);
-
-	s3c_rtc_disable_clk(info);
 
 	return 0;
 

@@ -283,7 +283,8 @@ static inline struct rmap_item *alloc_rmap_item(void)
 {
 	struct rmap_item *rmap_item;
 
-	rmap_item = kmem_cache_zalloc(rmap_item_cache, GFP_KERNEL);
+	rmap_item = kmem_cache_zalloc(rmap_item_cache, GFP_KERNEL |
+						__GFP_NORETRY | __GFP_NOWARN);
 	if (rmap_item)
 		ksm_rmap_items++;
 	return rmap_item;
@@ -298,7 +299,12 @@ static inline void free_rmap_item(struct rmap_item *rmap_item)
 
 static inline struct stable_node *alloc_stable_node(void)
 {
-	return kmem_cache_alloc(stable_node_cache, GFP_KERNEL);
+	/*
+	 * The allocation can take too long with GFP_KERNEL when memory is under
+	 * pressure, which may lead to hung task warnings.  Adding __GFP_HIGH
+	 * grants access to memory reserves, helping to avoid this problem.
+	 */
+	return kmem_cache_alloc(stable_node_cache, GFP_KERNEL | __GFP_HIGH);
 }
 
 static inline void free_stable_node(struct stable_node *stable_node)
@@ -970,13 +976,11 @@ out:
  * @page: the PageAnon page that we want to replace with kpage
  * @kpage: the PageKsm page that we want to map instead of page,
  *         or NULL the first time when we want to use page as kpage.
- * @anon_vma: output the anon_vma of page used as kpage
  *
  * This function returns 0 if the pages were merged, -EFAULT otherwise.
  */
 static int try_to_merge_one_page(struct vm_area_struct *vma,
-				 struct page *page, struct page *kpage,
-				 struct anon_vma **anon_vma)
+				 struct page *page, struct page *kpage)
 {
 	pte_t orig_pte = __pte(0);
 	int err = -EFAULT;
@@ -1016,8 +1020,6 @@ static int try_to_merge_one_page(struct vm_area_struct *vma,
 			 * PageAnon+anon_vma to PageKsm+NULL stable_node:
 			 * stable_tree_insert() will update stable_node.
 			 */
-			if (anon_vma != NULL)
-				*anon_vma = page_anon_vma(page);
 			set_page_stable_node(page, NULL);
 			mark_page_accessed(page);
 			/*
@@ -1058,7 +1060,6 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 {
 	struct mm_struct *mm = rmap_item->mm;
 	struct vm_area_struct *vma;
-	struct anon_vma *anon_vma = NULL;
 	int err = -EFAULT;
 
 	down_read(&mm->mmap_sem);
@@ -1066,7 +1067,7 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 	if (!vma)
 		goto out;
 
-	err = try_to_merge_one_page(vma, page, kpage, &anon_vma);
+	err = try_to_merge_one_page(vma, page, kpage);
 	if (err)
 		goto out;
 
@@ -1074,10 +1075,7 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 	remove_rmap_item_from_tree(rmap_item);
 
 	/* Must get reference to anon_vma while still holding mmap_sem */
-	if (anon_vma != NULL)
-		rmap_item->anon_vma = anon_vma;
-	else
-		rmap_item->anon_vma = vma->anon_vma;
+	rmap_item->anon_vma = vma->anon_vma;
 	get_anon_vma(vma->anon_vma);
 out:
 	up_read(&mm->mmap_sem);
@@ -1441,11 +1439,6 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	}
 
 	remove_rmap_item_from_tree(rmap_item);
-
-	if (kpage == page) {
-		put_page(kpage);
-		return;
-	}
 
 	if (kpage) {
 		err = try_to_merge_with_ksm_page(rmap_item, page, kpage);

@@ -116,7 +116,8 @@ MODULE_PARM_DESC(write_timeout, "Time (in ms) to try writes (default 25)");
 /*
  * Both reads and writes fail if the previous write didn't complete yet. This
  * macro loops a few times waiting at least long enough for one entire page
- * write to work.
+ * write to work while making sure that at least one iteration is run before
+ * checking the break condition.
  *
  * It takes two parameters: a variable in which the future timeout in jiffies
  * will be stored and a temporary variable holding the time of the last
@@ -124,9 +125,8 @@ MODULE_PARM_DESC(write_timeout, "Time (in ms) to try writes (default 25)");
  * holding at least 32 bits.
  */
 #define loop_until_timeout(tout, op_time)				\
-	for (tout = jiffies + msecs_to_jiffies(write_timeout),		\
-		op_time = jiffies;					\
-	     time_before(op_time, tout);				\
+	for (tout = jiffies + msecs_to_jiffies(write_timeout), op_time = 0; \
+	     op_time ? time_before(op_time, tout) : true;		\
 	     usleep_range(1000, 1500), op_time = jiffies)
 
 static const struct i2c_device_id at24_ids[] = {
@@ -593,6 +593,7 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	struct at24_data *at24;
 	int err;
 	unsigned i, num_addresses;
+	u8 test_byte;
 
 	if (client->dev.platform_data) {
 		chip = *(struct at24_platform_data *)client->dev.platform_data;
@@ -743,6 +744,18 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 	}
 
+	i2c_set_clientdata(client, at24);
+
+	/*
+	 * Perform a one-byte test read to verify that the
+	 * chip is functional.
+	 */
+	err = at24_read(at24, 0, &test_byte, 1);
+	if (err) {
+		err = -ENODEV;
+		goto err_clients;
+	}
+
 	at24->nvmem_config.name = dev_name(&client->dev);
 	at24->nvmem_config.dev = &client->dev;
 	at24->nvmem_config.read_only = !writable;
@@ -763,8 +776,6 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		err = PTR_ERR(at24->nvmem);
 		goto err_clients;
 	}
-
-	i2c_set_clientdata(client, at24);
 
 	dev_info(&client->dev, "%u byte %s EEPROM, %s, %u bytes/write\n",
 		chip.byte_len, client->name,
