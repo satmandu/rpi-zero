@@ -73,6 +73,7 @@ dtb-$(CONFIG_ARCH_BCM2835) += \
 	bcm2835-rpi-b-rev2.dtb \
 	bcm2835-rpi-b-plus.dtb \
 	bcm2835-rpi-a-plus.dtb \
+	bcm2835-rpi-cmio.dtb \
 	bcm2836-rpi-2-b.dtb \
 	bcm2837-rpi-3-b.dtb \
 	bcm2835-rpi-zero.dtb \
