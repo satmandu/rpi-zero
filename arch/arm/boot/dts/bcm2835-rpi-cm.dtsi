@@ -3,10 +3,36 @@
 #include "bcm2835.dtsi"
 #include "bcm2835-rpi.dtsi"
 
-&sdhci {
-	non-removable;
+/ {
+	emmc_pwrseq: emmc-pwrseq {
+		compatible = "mmc-pwrseq-emmc";
+		pinctrl-0 = <&emmc_reset>;
+		pinctrl-names = "default";
+		reset-gpios = <&gpio 47 GPIO_ACTIVE_HIGH>;
+	};
+
+	reg_1v8: reg-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "1V8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
+};
+
+&gpio {
+	emmc_reset: emmc-reset {
+		brcm,pins = <47>;
+		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
+	};
+};
+
+&hdmi {
+	hpd-gpios = <&gpio 46 GPIO_ACTIVE_HIGH>;
 };
 
 &sdhost {
 	non-removable;
+	mmc-pwrseq = <&emmc_pwrseq>;
+	vmmc-supply = <&reg_1v8>;
 };

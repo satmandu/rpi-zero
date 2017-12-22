@@ -6,20 +6,6 @@
 / {
 	compatible = "raspberrypi,compute-module", "brcm,bcm2835";
 	model = "Raspberry Pi Compute Module IO board";
-
-	leds {
-		act {
-			gpios = <&gpio 47 GPIO_ACTIVE_LOW>;
-		};
-	};
-
-	reg_1v8: reg-1v8 {
-		compatible = "regulator-fixed";
-		regulator-name = "1V8";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		regulator-always-on;
-	};
 };
 
 &gpio {
@@ -78,7 +64,8 @@
 			  "GPIO44",
 			  "GPIO45",
 			  "HDMI_HPD_N",
-			  "STATUS_LED_N",
+			  /* Also used as ACT LED */
+			  "EMMC_EN_N",
 			  /* Used by eMMC */
 			  "SD_CLK_R",
 			  "SD_CMD_R",
@@ -88,18 +75,6 @@
 			  "SD_DATA3_R";
 
 	pinctrl-0 = <&gpioout &alt0>;
-};
-
-&hdmi {
-	hpd-gpios = <&gpio 46 GPIO_ACTIVE_HIGH>;
-};
-
-&sdhci {
-	vmmc-supply = <&reg_1v8>;
-};
-
-&sdhost {
-	vmmc-supply = <&reg_1v8>;
 };
 
 &uart0 {
