@@ -31,7 +31,7 @@
 	hpd-gpios = <&gpio 46 GPIO_ACTIVE_HIGH>;
 };
 
-&sdhost {
+&sdhci {
 	non-removable;
 	mmc-pwrseq = <&emmc_pwrseq>;
 	vmmc-supply = <&reg_1v8>;
