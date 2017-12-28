@@ -35,4 +35,5 @@
 	non-removable;
 	mmc-pwrseq = <&emmc_pwrseq>;
 	vmmc-supply = <&reg_1v8>;
+	vqmmc-supply = <&reg_1v8>;
 };
