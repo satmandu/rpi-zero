@@ -50,6 +50,7 @@ static u16 sdhci_iproc_readw(struct sdhci_host *host, int reg)
 {
 	u32 val = sdhci_iproc_readl(host, (reg & ~3));
 	u16 word = val >> REG_OFFSET_IN_BITS(reg) & 0xffff;
+
 	return word;
 }
 
@@ -233,8 +234,7 @@ static const struct sdhci_iproc_data bcm2835_data = {
 			& SDHCI_MAX_BLOCK_MASK) |
 		SDHCI_CAN_VDD_330 |
 		SDHCI_CAN_DO_HISPD,
-	.caps1 = SDHCI_DRIVER_TYPE_A |
-		 SDHCI_DRIVER_TYPE_C,
+	.caps1 = 0x00000000,
 	.mmc_caps = 0x00000000,
 };
 
