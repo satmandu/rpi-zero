@@ -16,10 +16,12 @@
  */
 
 #include <linux/delay.h>
+#include <linux/hashtable.h>
 #include <linux/module.h>
 #include <linux/mmc/host.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/slab.h>
 #include "sdhci-pltfm.h"
 
 struct sdhci_iproc_data {
@@ -33,7 +35,17 @@ struct sdhci_iproc_host {
 	const struct sdhci_iproc_data *data;
 	u32 shadow_cmd;
 	u32 shadow_blk;
+	int previous_reg;
 };
+
+struct reg_hash {
+	struct hlist_node node;
+	int reg;
+};
+
+#define BCM2835_REG_HT_BITS 4
+
+static DEFINE_HASHTABLE(bcm2835_used_regs, BCM2835_REG_HT_BITS);
 
 #define REG_OFFSET_IN_BITS(reg) ((reg) << 3 & 0x18)
 
@@ -76,6 +88,37 @@ static inline void sdhci_iproc_writel(struct sdhci_host *host, u32 val, int reg)
 			udelay(10);
 	}
 }
+
+static inline void sdhci_iproc_writel_verify(struct sdhci_host *host,
+					     u32 val, int reg)
+ {
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_iproc_host *iproc_host = sdhci_pltfm_priv(pltfm_host);
+	struct reg_hash *rh;
+	struct hlist_head *head;
+
+	head = &bcm2835_used_regs[hash_min(reg, BCM2835_REG_HT_BITS)];
+
+	if (iproc_host->previous_reg == reg) {
+		if ((reg != SDHCI_HOST_CONTROL) &&
+		    (reg != SDHCI_CLOCK_CONTROL) &&
+		    (reg != SDHCI_BUFFER) &&
+		    (reg != SDHCI_INT_STATUS) &&
+		    (hlist_empty(head))) {
+			rh = kzalloc(sizeof(*rh), GFP_KERNEL);
+			if (WARN_ON(!rh))
+				return;
+
+			rh->reg = reg;
+			hash_add(bcm2835_used_regs, &rh->node, rh->reg);
+			dev_err(mmc_dev(host->mmc), "back-to-back write to 0x%x\n",
+				reg);
+		}
+	}
+	iproc_host->previous_reg = reg;
+
+	writel(val, host->ioaddr + reg);
+ }
 
 /*
  * The Arasan has a bugette whereby it may lose the content of successive
@@ -163,7 +206,11 @@ static const struct sdhci_ops sdhci_iproc_32only_ops = {
 	.read_l = sdhci_iproc_readl,
 	.read_w = sdhci_iproc_readw,
 	.read_b = sdhci_iproc_readb,
+#ifdef CONFIG_MMC_SDHCI_BCM2835_VERIFY_WORKAROUND
+	.write_l = sdhci_iproc_writel_verify,
+#else
 	.write_l = sdhci_iproc_writel,
+#endif
 	.write_w = sdhci_iproc_writew,
 	.write_b = sdhci_iproc_writeb,
 	.set_clock = sdhci_set_clock,
