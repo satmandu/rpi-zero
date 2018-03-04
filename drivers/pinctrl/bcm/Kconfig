@@ -22,6 +22,12 @@ config PINCTRL_BCM2835
 	select PINCONF
 	select GPIOLIB_IRQCHIP
 
+config PINCTRL_BCM2835_PADS
+	tristate "Broadcom BCM2835 pads control driver"
+	depends on OF && (ARCH_BCM2835 || COMPILE_TEST)
+	help
+	  Say yes here to enable the Broadcom BCM2835 pads control driver.
+
 config PINCTRL_IPROC_GPIO
 	bool "Broadcom iProc GPIO (with PINCONF) driver"
 	depends on OF_GPIO && (ARCH_BCM_IPROC || COMPILE_TEST)

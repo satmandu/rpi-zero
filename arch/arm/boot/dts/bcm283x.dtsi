@@ -118,6 +118,11 @@
 			reg = <0x7e100000 0x28>;
 		};
 
+		pads@7e10002c {
+			compatible = "brcm,bcm2835-pm-pads";
+			reg = <0x7e10002c 0x18>;
+		};
+
 		clocks: cprman@7e101000 {
 			compatible = "brcm,bcm2835-cprman";
 			#clock-cells = <1>;
