@@ -53,7 +53,7 @@
 #define HCI_UART_RAW_DEVICE	0
 #define HCI_UART_RESET_ON_INIT	1
 #define HCI_UART_CREATE_AMP	2
-#define HCI_UART_INIT_PENDING	3
+/* 3 is unused - was HCI_UART_INIT_PENDING */
 #define HCI_UART_EXT_CONFIG	4
 #define HCI_UART_VND_DETECT	5
 
@@ -83,7 +83,6 @@ struct hci_uart {
 	unsigned long		flags;
 	unsigned long		hdev_flags;
 
-	struct work_struct	init_ready;
 	struct work_struct	write_work;
 
 	const struct hci_uart_proto *proto;
@@ -115,7 +114,6 @@ int hci_uart_register_device(struct hci_uart *hu, const struct hci_uart_proto *p
 void hci_uart_unregister_device(struct hci_uart *hu);
 
 int hci_uart_tx_wakeup(struct hci_uart *hu);
-int hci_uart_init_ready(struct hci_uart *hu);
 void hci_uart_set_baudrate(struct hci_uart *hu, unsigned int speed);
 void hci_uart_set_flow_control(struct hci_uart *hu, bool enable);
 void hci_uart_set_speeds(struct hci_uart *hu, unsigned int init_speed,

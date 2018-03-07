@@ -195,39 +195,6 @@ restart:
 	clear_bit(HCI_UART_SENDING, &hu->tx_state);
 }
 
-static void hci_uart_init_work(struct work_struct *work)
-{
-	struct hci_uart *hu = container_of(work, struct hci_uart, init_ready);
-	int err;
-	struct hci_dev *hdev;
-
-	if (!test_and_clear_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags))
-		return;
-
-	err = hci_register_dev(hu->hdev);
-	if (err < 0) {
-		BT_ERR("Can't register HCI device");
-		hdev = hu->hdev;
-		hu->hdev = NULL;
-		hci_free_dev(hdev);
-		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
-		hu->proto->close(hu);
-		return;
-	}
-
-	set_bit(HCI_UART_REGISTERED, &hu->flags);
-}
-
-int hci_uart_init_ready(struct hci_uart *hu)
-{
-	if (!test_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags))
-		return -EALREADY;
-
-	schedule_work(&hu->init_ready);
-
-	return 0;
-}
-
 /* ------- Interface to HCI layer ------ */
 /* Initialize device */
 static int hci_uart_open(struct hci_dev *hdev)
@@ -490,7 +457,6 @@ static int hci_uart_tty_open(struct tty_struct *tty)
 	hu->alignment = 1;
 	hu->padding = 0;
 
-	INIT_WORK(&hu->init_ready, hci_uart_init_work);
 	INIT_WORK(&hu->write_work, hci_uart_write_work);
 
 	percpu_init_rwsem(&hu->proto_lock);
@@ -653,9 +619,6 @@ static int hci_uart_register_dev(struct hci_uart *hu)
 	else
 		hdev->dev_type = HCI_PRIMARY;
 
-	if (test_bit(HCI_UART_INIT_PENDING, &hu->hdev_flags))
-		return 0;
-
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
 		hu->hdev = NULL;
@@ -699,7 +662,6 @@ static int hci_uart_set_flags(struct hci_uart *hu, unsigned long flags)
 	unsigned long valid_flags = BIT(HCI_UART_RAW_DEVICE) |
 				    BIT(HCI_UART_RESET_ON_INIT) |
 				    BIT(HCI_UART_CREATE_AMP) |
-				    BIT(HCI_UART_INIT_PENDING) |
 				    BIT(HCI_UART_EXT_CONFIG) |
 				    BIT(HCI_UART_VND_DETECT);
 
