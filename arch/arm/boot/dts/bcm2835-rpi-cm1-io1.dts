@@ -8,10 +8,6 @@
 	model = "Raspberry Pi Compute Module IO board rev1";
 };
 
-&dsi1 {
-	status = "okay";
-};
-
 &gpio {
 	/*
 	 * This is based on the official GPU firmware DT blob.
@@ -82,7 +78,7 @@
 };
 
 &hdmi {
-	hpd-gpios = <&gpio 46 GPIO_ACTIVE_HIGH>;
+	hpd-gpios = <&gpio 46 GPIO_ACTIVE_LOW>;
 };
 
 &uart0 {
