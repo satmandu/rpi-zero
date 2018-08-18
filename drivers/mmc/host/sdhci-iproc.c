@@ -246,7 +246,7 @@ static const struct sdhci_iproc_data bcm2835_data = {
 		SDHCI_CAN_DO_HISPD,
 	.caps1 = SDHCI_DRIVER_TYPE_A |
 		 SDHCI_DRIVER_TYPE_C,
-	.mmc_caps = 0x00000000,
+	.mmc_caps = MMC_CAP_3_3V_DDR,
 };
 
 static const struct of_device_id sdhci_iproc_of_match[] = {
