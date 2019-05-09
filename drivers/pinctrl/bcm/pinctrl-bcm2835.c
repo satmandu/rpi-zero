@@ -57,14 +57,25 @@
 #define GPAFEN0		0x88	/* Pin Async Falling Edge Detect */
 #define GPPUD		0x94	/* Pin Pull-up/down Enable */
 #define GPPUDCLK0	0x98	/* Pin Pull-up/down Enable Clock */
+#define GP_GPIO_PUP_PDN_CNTRL_REG0 0xe4 /* 7211 Pin Pull-up/down select */
 
 #define FSEL_REG(p)		(GPFSEL0 + (((p) / 10) * 4))
 #define FSEL_SHIFT(p)		(((p) % 10) * 3)
 #define GPIO_REG_OFFSET(p)	((p) / 32)
 #define GPIO_REG_SHIFT(p)	((p) % 32)
 
+#define PUD_7211_MASK		0x3
+#define PUD_7211_REG_OFFSET(p)	((p) / 16)
+#define PUD_7211_REG_SHIFT(p)	(((p) % 16) * 2)
+
 /* argument: bcm2835_pinconf_pull */
 #define BCM2835_PINCONF_PARAM_PULL	(PIN_CONFIG_END + 1)
+
+enum bcm7211_pinconf_pull {
+	BCM7211_PINCONFIG_PULL_NONE,
+	BCM7211_PINCONFIG_PULL_UP,
+	BCM7211_PINCONFIG_PULL_DOWN,
+};
 
 struct bcm2835_pinctrl {
 	struct device *dev;
@@ -975,6 +986,55 @@ static const struct pinconf_ops bcm2835_pinconf_ops = {
 	.pin_config_set = bcm2835_pinconf_set,
 };
 
+static int bcm7211_pinconf_set(struct pinctrl_dev *pctldev,
+			       unsigned int pin, unsigned long *configs,
+			       unsigned int num_configs)
+{
+	struct bcm2835_pinctrl *pc = pinctrl_dev_get_drvdata(pctldev);
+	u32 param, arg;
+	u32 shifter;
+	u32 value;
+	u32 off;
+	int i;
+
+	for (i = 0; i < num_configs; i++) {
+		param = pinconf_to_config_param(configs[i]);
+		if (param != BCM2835_PINCONF_PARAM_PULL)
+			return -EINVAL;
+		arg = pinconf_to_config_argument(configs[i]);
+
+		/* convert to 7211 value */
+		switch (arg) {
+		case PIN_CONFIG_BIAS_DISABLE:
+			arg = BCM7211_PINCONFIG_PULL_NONE;
+			break;
+		case PIN_CONFIG_BIAS_PULL_DOWN:
+			arg = BCM7211_PINCONFIG_PULL_DOWN;
+			break;
+		case PIN_CONFIG_BIAS_PULL_UP:
+			arg = BCM7211_PINCONFIG_PULL_UP;
+			break;
+		}
+
+		off = PUD_7211_REG_OFFSET(pin);
+		shifter = PUD_7211_REG_SHIFT(pin);
+
+		value = bcm2835_gpio_rd(pc, GP_GPIO_PUP_PDN_CNTRL_REG0 +
+					(off * 4));
+		value &= ~(PUD_7211_MASK << shifter);
+		value |= (arg << shifter);
+		bcm2835_gpio_wr(pc, GP_GPIO_PUP_PDN_CNTRL_REG0 + (off * 4),
+				value);
+	} /* for each config */
+
+	return 0;
+}
+
+static const struct pinconf_ops bcm7211_pinconf_ops = {
+	.pin_config_get = bcm2835_pinconf_get,
+	.pin_config_set = bcm7211_pinconf_set,
+};
+
 static struct pinctrl_desc bcm2835_pinctrl_desc = {
 	.name = MODULE_NAME,
 	.pins = bcm2835_gpio_pins,
@@ -990,6 +1050,18 @@ static struct pinctrl_gpio_range bcm2835_pinctrl_gpio_range = {
 	.npins = BCM2835_NUM_GPIOS,
 };
 
+static const struct of_device_id bcm2835_pinctrl_match[] = {
+	{
+		.compatible = "brcm,bcm2835-gpio",
+		.data = &bcm2835_pinconf_ops,
+	},
+	{
+		.compatible = "brcm,bcm7211-gpio",
+		.data = &bcm7211_pinconf_ops,
+	},
+	{}
+};
+
 static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -997,6 +1069,8 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 	struct bcm2835_pinctrl *pc;
 	struct resource iomem;
 	int err, i;
+	const struct of_device_id *match;
+
 	BUILD_BUG_ON(ARRAY_SIZE(bcm2835_gpio_pins) != BCM2835_NUM_GPIOS);
 	BUILD_BUG_ON(ARRAY_SIZE(bcm2835_gpio_groups) != BCM2835_NUM_GPIOS);
 
@@ -1073,6 +1147,12 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 					     bcm2835_gpio_irq_handler);
 	}
 
+	match = of_match_node(bcm2835_pinctrl_match, pdev->dev.of_node);
+	if (match) {
+		bcm2835_pinctrl_desc.confops =
+			(const struct pinconf_ops *)match->data;
+	}
+
 	pc->pctl_dev = devm_pinctrl_register(dev, &bcm2835_pinctrl_desc, pc);
 	if (IS_ERR(pc->pctl_dev)) {
 		gpiochip_remove(&pc->gpio_chip);
@@ -1086,11 +1166,6 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 
 	return 0;
 }
-
-static const struct of_device_id bcm2835_pinctrl_match[] = {
-	{ .compatible = "brcm,bcm2835-gpio" },
-	{}
-};
 
 static struct platform_driver bcm2835_pinctrl_driver = {
 	.probe = bcm2835_pinctrl_probe,
