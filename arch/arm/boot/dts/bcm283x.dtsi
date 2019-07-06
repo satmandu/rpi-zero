@@ -117,22 +117,36 @@
 				brcm,function = <BCM2835_FSEL_ALT2>;
 			};
 			emmc_gpio22: emmc_gpio22 {
-				brcm,pins = <22 23 24 25 26 27>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
+				pins-cmd-dat {
+					brcm,pins = <23 24 25 26 27>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
+				pin-clk {
+					brcm,pins = <22>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
 			};
 			emmc_gpio34: emmc_gpio34 {
-				brcm,pins = <34 35 36 37 38 39>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
-				brcm,pull = <BCM2835_PUD_OFF
-					     BCM2835_PUD_UP
-					     BCM2835_PUD_UP
-					     BCM2835_PUD_UP
-					     BCM2835_PUD_UP
-					     BCM2835_PUD_UP>;
+				pins-cmd-dat {
+					brcm,pins = <35 36 37 38 39>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-pull-up;
+				};
+				pin-clk {
+					brcm,pins = <34>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-disable;
+				};
 			};
 			emmc_gpio48: emmc_gpio48 {
-				brcm,pins = <48 49 50 51 52 53>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
+				pins-cmd-dat {
+					brcm,pins = <49 50 51 52 53>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
+				pin-clk {
+					brcm,pins = <48>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
 			};
 
 			gpclk0_gpio4: gpclk0_gpio4 {
@@ -158,7 +172,7 @@
 			gpclk2_gpio43: gpclk2_gpio43 {
 				brcm,pins = <43>;
 				brcm,function = <BCM2835_FSEL_ALT0>;
-				brcm,pull = <BCM2835_PUD_OFF>;
+				bias-disable;
 			};
 
 			i2c0_gpio0: i2c0_gpio0 {
@@ -219,8 +233,14 @@
 			};
 
 			uart0_gpio14: uart0_gpio14 {
-				brcm,pins = <14 15>;
-				brcm,function = <BCM2835_FSEL_ALT0>;
+				pin-tx {
+					brcm,pins = <14>;
+					brcm,function = <BCM2835_FSEL_ALT0>;
+				};
+				pin-rx {
+					brcm,pins = <15>;
+					brcm,function = <BCM2835_FSEL_ALT0>;
+				};
 			};
 			/* Separate from the uart0_gpio14 group
 			 * because it conflicts with spi1_gpio16, and
@@ -228,51 +248,119 @@
 			 * without flow control.
 			 */
 			uart0_ctsrts_gpio16: uart0_ctsrts_gpio16 {
-				brcm,pins = <16 17>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
+				pin-cts {
+					brcm,pins = <16>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
+				pin-rts {
+					brcm,pins = <17>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+				};
 			};
 			uart0_ctsrts_gpio30: uart0_ctsrts_gpio30 {
-				brcm,pins = <30 31>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
-				brcm,pull = <BCM2835_PUD_UP BCM2835_PUD_OFF>;
+				pin-cts {
+					brcm,pins = <30>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-pull-up;
+				};
+				pin-rts {
+					brcm,pins = <31>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-disable;
+				};
 			};
 			uart0_gpio32: uart0_gpio32 {
-				brcm,pins = <32 33>;
-				brcm,function = <BCM2835_FSEL_ALT3>;
-				brcm,pull = <BCM2835_PUD_OFF BCM2835_PUD_UP>;
+				pin-tx {
+					brcm,pins = <32>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-disable;
+				};
+				pin-rx {
+					brcm,pins = <33>;
+					brcm,function = <BCM2835_FSEL_ALT3>;
+					bias-pull-up;
+				};
 			};
 			uart0_gpio36: uart0_gpio36 {
-				brcm,pins = <36 37>;
-				brcm,function = <BCM2835_FSEL_ALT2>;
+				pin-tx {
+					brcm,pins = <36>;
+					brcm,function = <BCM2835_FSEL_ALT2>;
+				};
+				pin-rx {
+					brcm,pins = <37>;
+					brcm,function = <BCM2835_FSEL_ALT2>;
+				};
 			};
 			uart0_ctsrts_gpio38: uart0_ctsrts_gpio38 {
-				brcm,pins = <38 39>;
-				brcm,function = <BCM2835_FSEL_ALT2>;
+				pin-cts {
+					brcm,pins = <38>;
+					brcm,function = <BCM2835_FSEL_ALT2>;
+				};
+				pin-rts {
+					brcm,pins = <39>;
+					brcm,function = <BCM2835_FSEL_ALT2>;
+				};
 			};
 
 			uart1_gpio14: uart1_gpio14 {
-				brcm,pins = <14 15>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-tx {
+					brcm,pins = <14>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rx {
+					brcm,pins = <15>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 			uart1_ctsrts_gpio16: uart1_ctsrts_gpio16 {
-				brcm,pins = <16 17>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-cts {
+					brcm,pins = <16>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rts {
+					brcm,pins = <17>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 			uart1_gpio32: uart1_gpio32 {
-				brcm,pins = <32 33>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-tx {
+					brcm,pins = <32>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rx {
+					brcm,pins = <33>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 			uart1_ctsrts_gpio30: uart1_ctsrts_gpio30 {
-				brcm,pins = <30 31>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-cts {
+					brcm,pins = <30>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rts {
+					brcm,pins = <31>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 			uart1_gpio40: uart1_gpio40 {
-				brcm,pins = <40 41>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-tx {
+					brcm,pins = <40>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rx {
+					brcm,pins = <41>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 			uart1_ctsrts_gpio42: uart1_ctsrts_gpio42 {
-				brcm,pins = <42 43>;
-				brcm,function = <BCM2835_FSEL_ALT5>;
+				pin-cts {
+					brcm,pins = <42>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
+				pin-rts {
+					brcm,pins = <43>;
+					brcm,function = <BCM2835_FSEL_ALT5>;
+				};
 			};
 		};
 
