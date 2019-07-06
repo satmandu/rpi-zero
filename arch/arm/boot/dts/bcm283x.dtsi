@@ -35,8 +35,6 @@
 			polling-delay-passive = <0>;
 			polling-delay = <1000>;
 
-			thermal-sensors = <&thermal>;
-
 			trips {
 				cpu-crit {
 					temperature	= <80000>;
@@ -59,6 +57,13 @@
 			compatible = "brcm,bcm2835-txp";
 			reg = <0x7e004000 0x20>;
 			interrupts = <1 11>;
+		};
+
+		mailbox: mailbox@7e00b880 {
+			compatible = "brcm,bcm2835-mbox";
+			reg = <0x7e00b880 0x40>;
+			interrupts = <0 1>;
+			#mbox-cells = <0>;
 		};
 
 		clocks: cprman@7e101000 {

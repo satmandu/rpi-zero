@@ -67,13 +67,6 @@
 			#interrupt-cells = <2>;
 		};
 
-		mailbox: mailbox@7e00b880 {
-			compatible = "brcm,bcm2835-mbox";
-			reg = <0x7e00b880 0x40>;
-			interrupts = <0 1>;
-			#mbox-cells = <0>;
-		};
-
 		pm: watchdog@7e100000 {
 			compatible = "brcm,bcm2835-pm", "brcm,bcm2835-pm-wdt";
 			#power-domain-cells = <1>;
@@ -107,6 +100,10 @@
 		compatible = "usb-nop-xceiv";
 		#phy-cells = <0>;
 	};
+};
+
+&cpu_thermal {
+	thermal-sensors = <&thermal>;
 };
 
 &gpio {
