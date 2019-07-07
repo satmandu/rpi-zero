@@ -115,3 +115,7 @@
 	pinctrl-0 = <&uart1_gpio14>;
 	status = "okay";
 };
+
+&vchiq {
+	interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+};

@@ -332,6 +332,10 @@
 
 &gpio {
 	compatible = "brcm,bcm2838-gpio";
+	interrupts = <GIC_SPI 113 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>;
 
 	gpclk0_gpio49: gpclk0_gpio49 {
 		brcm,pins = <49>;
