@@ -999,12 +999,10 @@ static int bcm7211_pinconf_set(struct pinctrl_dev *pctldev,
 
 	for (i = 0; i < num_configs; i++) {
 		param = pinconf_to_config_param(configs[i]);
-		if (param != BCM2835_PINCONF_PARAM_PULL)
-			return -EINVAL;
 		arg = pinconf_to_config_argument(configs[i]);
 
 		/* convert to 7211 value */
-		switch (arg) {
+		switch (param) {
 		case PIN_CONFIG_BIAS_DISABLE:
 			arg = BCM7211_PINCONFIG_PULL_NONE;
 			break;
@@ -1014,6 +1012,8 @@ static int bcm7211_pinconf_set(struct pinctrl_dev *pctldev,
 		case PIN_CONFIG_BIAS_PULL_UP:
 			arg = BCM7211_PINCONFIG_PULL_UP;
 			break;
+		default:
+			return -ENOTSUPP;
 		}
 
 		off = PUD_7211_REG_OFFSET(pin);
@@ -1031,6 +1031,7 @@ static int bcm7211_pinconf_set(struct pinctrl_dev *pctldev,
 }
 
 static const struct pinconf_ops bcm7211_pinconf_ops = {
+	.is_generic = true,
 	.pin_config_get = bcm2835_pinconf_get,
 	.pin_config_set = bcm7211_pinconf_set,
 };
