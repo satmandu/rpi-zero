@@ -1003,6 +1003,13 @@ static int bcm7211_pinconf_set(struct pinctrl_dev *pctldev,
 
 		/* convert to 7211 value */
 		switch (param) {
+		case BCM2835_PINCONF_PARAM_PULL:
+			/* convert legacy brcm,pull */
+			if (arg == BCM2835_PUD_UP)
+				arg = BCM7211_PINCONFIG_PULL_UP;
+			else if (arg == BCM2835_PUD_DOWN)
+				arg = BCM7211_PINCONFIG_PULL_DOWN;
+			break;
 		case PIN_CONFIG_BIAS_DISABLE:
 			arg = BCM7211_PINCONFIG_PULL_NONE;
 			break;
