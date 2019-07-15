@@ -272,7 +272,6 @@ static const struct sdhci_iproc_data bcm2838_data = {
 static const struct of_device_id sdhci_iproc_of_match[] = {
 	{ .compatible = "brcm,bcm2835-sdhci", .data = &bcm2835_data },
 	{ .compatible = "brcm,bcm2838-sdhci", .data = &bcm2838_data },
-	{ .compatible = "brcm,bcm2711-emmc2", .data = &bcm2838_data },
 	{ .compatible = "brcm,sdhci-iproc-cygnus", .data = &iproc_cygnus_data},
 	{ .compatible = "brcm,sdhci-iproc", .data = &iproc_data },
 	{ }
