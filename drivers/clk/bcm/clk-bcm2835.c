@@ -31,7 +31,8 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <dt-bindings/clock/bcm2835.h>
@@ -114,6 +115,8 @@
 #define CM_AVEODIV		0x1bc
 #define CM_EMMCCTL		0x1c0
 #define CM_EMMCDIV		0x1c4
+#define CM_EMMC2CTL		0x1d0
+#define CM_EMMC2DIV		0x1d4
 
 /* General bits for the CM_*CTL regs */
 # define CM_ENABLE			BIT(4)
@@ -1950,6 +1953,15 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.frac_bits = 8,
 		.tcnt_mux = 39),
 
+	/* EMMC2 clock (only available for BCM2838) */
+	[BCM2838_CLOCK_EMMC2]	= REGISTER_PER_CLK(
+		.name = "emmc2",
+		.ctl_reg = CM_EMMC2CTL,
+		.div_reg = CM_EMMC2DIV,
+		.int_bits = 4,
+		.frac_bits = 8,
+		.tcnt_mux = 42),
+
 	/* General purpose (GPIO) clocks */
 	[BCM2835_CLOCK_GP0]	= REGISTER_PER_CLK(
 		.name = "gp0",
@@ -2101,6 +2113,14 @@ static int bcm2835_mark_sdc_parent_critical(struct clk *sdc)
 	return clk_prepare_enable(parent);
 }
 
+bool bcm2835_has_clk(size_t index) {
+	return index != BCM2838_CLOCK_EMMC2;
+}
+
+bool bcm2838_has_clk(size_t index) {
+	return true;
+}
+
 static int bcm2835_clk_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2109,8 +2129,13 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 	struct resource *res;
 	const struct bcm2835_clk_desc *desc;
 	const size_t asize = ARRAY_SIZE(clk_desc_array);
+	bool (*has_clk_func)(size_t);
 	size_t i;
 	int ret;
+
+	has_clk_func = of_device_get_match_data(&pdev->dev);
+	if (!has_clk_func)
+		return -ENODEV;
 
 	cprman = devm_kzalloc(dev,
 			      struct_size(cprman, onecell.hws, asize),
@@ -2146,6 +2171,9 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 	hws = cprman->onecell.hws;
 
 	for (i = 0; i < asize; i++) {
+		if (!has_clk_func(i))
+			continue;
+
 		desc = &clk_desc_array[i];
 		if (desc->clk_register && desc->data)
 			hws[i] = desc->clk_register(cprman, desc->data);
@@ -2160,7 +2188,8 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id bcm2835_clk_of_match[] = {
-	{ .compatible = "brcm,bcm2835-cprman", },
+	{ .compatible = "brcm,bcm2835-cprman", .data = bcm2835_has_clk },
+	{ .compatible = "brcm,bcm2838-cprman", .data = bcm2838_has_clk },
 	{}
 };
 MODULE_DEVICE_TABLE(of, bcm2835_clk_of_match);
