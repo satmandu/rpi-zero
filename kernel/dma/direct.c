@@ -15,6 +15,8 @@
 #include <linux/set_memory.h>
 #include <linux/swiotlb.h>
 
+u64 dma_direct_min_mask __ro_after_init = DMA_BIT_MASK(32);
+
 /*
  * Most architectures use ZONE_DMA for the first 16 Megabytes, but
  * some use it for entirely different regions:
@@ -389,7 +391,7 @@ int dma_direct_supported(struct device *dev, u64 mask)
 	if (IS_ENABLED(CONFIG_ZONE_DMA))
 		min_mask = DMA_BIT_MASK(ARCH_ZONE_DMA_BITS);
 	else
-		min_mask = DMA_BIT_MASK(32);
+		min_mask = dma_direct_min_mask;
 
 	min_mask = min_t(u64, min_mask, (max_pfn - 1) << PAGE_SHIFT);
 
