@@ -52,6 +52,8 @@ EXPORT_SYMBOL(memstart_addr);
 
 phys_addr_t arm64_dma_phys_limit __ro_after_init;
 
+extern u64 dma_direct_min_mask;
+
 #ifdef CONFIG_KEXEC_CORE
 /*
  * reserve_crashkernel() - reserves memory for crash kernel
@@ -198,8 +200,12 @@ static int __init early_init_dt_scan_dma_ranges(unsigned long node,
 	if (size > (1ULL << 32))
 		size = 1ULL << 32;
 
-	if (*dma_phys_limit > (phys_addr + size))
+	if (*dma_phys_limit > (phys_addr + size)) {
+		/* Set min DMA mask in case is was smaller than 32 */
+		dma_direct_min_mask = size - 1;
+
 		*dma_phys_limit = phys_addr + size;
+	}
 
 	return 0;
 }
