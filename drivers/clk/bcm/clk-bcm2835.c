@@ -1676,6 +1676,7 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 
 	/* PLLB is used for the ARM's clock. */
 	[BCM2835_PLLB]		= REGISTER_PLL(
+		SOC_ALL,
 		.name = "pllb",
 		.cm_ctrl_reg = CM_PLLB,
 		.a2w_ctrl_reg = A2W_PLLB_CTRL,
@@ -1690,6 +1691,7 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.max_rate = 3000000000u,
 		.max_fb_rate = BCM2835_MAX_FB_RATE),
 	[BCM2835_PLLB_ARM]	= REGISTER_PLL_DIV(
+		SOC_ALL,
 		.name = "pllb_arm",
 		.source_pll = "pllb",
 		.cm_reg = CM_PLLB,
