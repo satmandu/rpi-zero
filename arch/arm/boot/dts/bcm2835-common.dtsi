@@ -131,11 +131,6 @@
 			compatible = "brcm,bcm2835-vc4";
 		};
 	};
-
-	usbphy: phy {
-		compatible = "usb-nop-xceiv";
-		#phy-cells = <0>;
-	};
 };
 
 &cpu_thermal {
@@ -196,9 +191,4 @@
 &spi {
 	dmas = <&dma 6>, <&dma 7>;
 	dma-names = "tx", "rx";
-};
-
-&usb {
-	phys = <&usbphy>;
-	phy-names = "usb2-phy";
 };
