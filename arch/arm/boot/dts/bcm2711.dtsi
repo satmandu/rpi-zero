@@ -351,42 +351,62 @@
 	i2c0_gpio46: i2c0_gpio46 {
 		brcm,pins = <46 47>;
 		brcm,function = <BCM2835_FSEL_ALT0>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c1_gpio46: i2c1_gpio46 {
 		brcm,pins = <46 47>;
 		brcm,function = <BCM2835_FSEL_ALT1>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c3_gpio2: i2c3_gpio2 {
 		brcm,pins = <2 3>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c3_gpio4: i2c3_gpio4 {
 		brcm,pins = <4 5>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c4_gpio6: i2c4_gpio6 {
 		brcm,pins = <6 7>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c4_gpio8: i2c4_gpio8 {
 		brcm,pins = <8 9>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c5_gpio10: i2c5_gpio10 {
 		brcm,pins = <10 11>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c5_gpio12: i2c5_gpio12 {
 		brcm,pins = <12 13>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c6_gpio0: i2c6_gpio0 {
 		brcm,pins = <0 1>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c6_gpio22: i2c6_gpio22 {
 		brcm,pins = <22 23>;
 		brcm,function = <BCM2835_FSEL_ALT5>;
+		brcm,pull = <BCM2835_PUD_UP
+			     BCM2835_PUD_OFF>;
 	};
 	i2c_slave_gpio8: i2c_slave_gpio8 {
 		brcm,pins = <8 9 10 11>;

@@ -180,22 +180,32 @@
 			i2c0_gpio0: i2c0_gpio0 {
 				brcm,pins = <0 1>;
 				brcm,function = <BCM2835_FSEL_ALT0>;
+				brcm,pull = <BCM2835_PUD_UP
+					     BCM2835_PUD_OFF>;
 			};
 			i2c0_gpio28: i2c0_gpio28 {
 				brcm,pins = <28 29>;
 				brcm,function = <BCM2835_FSEL_ALT0>;
+				brcm,pull = <BCM2835_PUD_UP
+					     BCM2835_PUD_OFF>;
 			};
 			i2c0_gpio44: i2c0_gpio44 {
 				brcm,pins = <44 45>;
 				brcm,function = <BCM2835_FSEL_ALT1>;
+				brcm,pull = <BCM2835_PUD_UP
+					     BCM2835_PUD_OFF>;
 			};
 			i2c1_gpio2: i2c1_gpio2 {
 				brcm,pins = <2 3>;
 				brcm,function = <BCM2835_FSEL_ALT0>;
+				brcm,pull = <BCM2835_PUD_UP
+					     BCM2835_PUD_OFF>;
 			};
 			i2c1_gpio44: i2c1_gpio44 {
 				brcm,pins = <44 45>;
 				brcm,function = <BCM2835_FSEL_ALT2>;
+				brcm,pull = <BCM2835_PUD_UP
+					     BCM2835_PUD_OFF>;
 			};
 
 			jtag_gpio22: jtag_gpio22 {
