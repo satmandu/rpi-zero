@@ -3470,9 +3470,8 @@ static int bcmgenet_probe(struct platform_device *pdev)
 	if (dn) {
 		macaddr = of_get_mac_address(dn);
 		if (IS_ERR(macaddr)) {
-			dev_err(&pdev->dev, "can't find MAC address\n");
-			err = -EINVAL;
-			goto err;
+			dev_warn(&pdev->dev, "using random Ethernet MAC\n");
+			eth_hw_addr_random(dev);
 		}
 	} else {
 		macaddr = pd->mac_address;
