@@ -81,6 +81,12 @@ void arch_setup_dma_ops(struct device *dev, u64 dma_base, u64 size,
 	if (iommu)
 		iommu_setup_dma_ops(dev, dma_base, size);
 
+/* do not use this function in a driver */
+static inline bool is_device_dma_coherent(struct device *dev)
+{
+	return dev->archdata.dma_coherent;
+}
+
 #ifdef CONFIG_XEN
 	if (xen_initial_domain())
 		dev->dma_ops = &xen_swiotlb_dma_ops;
